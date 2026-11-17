@@ -1,15 +1,19 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { ChannelSidebar } from './components/ChannelSidebar';
 import { ChatArea } from './components/ChatArea';
+import { VideoGrid } from './components/VideoGrid';
 import { UserList } from './components/UserList';
 import { useSocket } from './hooks/useSocket';
-import type { Channel } from './types';
-import { Compass, Plus, Radio, User, Check } from 'lucide-react';
+import { useWebRTC } from './hooks/useWebRTC';
+import type { Channel, Message } from './types';
+import { Compass, Plus, Radio, User, Check, Video } from 'lucide-react';
 
 const DEFAULT_CHANNELS: Channel[] = [
-  { id: 'general', name: 'general', topic: 'General discussion and hangout' },
-  { id: 'random', name: 'random', topic: 'Off-topic banter and memes' },
-  { id: 'dev-chat', name: 'dev-chat', topic: 'Architecture, bugs, code reviews and tech discussions' },
+  { id: 'general', name: 'general', type: 'text', topic: 'General discussion and hangout' },
+  { id: 'random', name: 'random', type: 'text', topic: 'Off-topic banter and memes' },
+  { id: 'dev-chat', name: 'dev-chat', type: 'text', topic: 'Architecture, bugs, code reviews and tech discussions' },
+  { id: 'voice-lounge', name: 'Voice Lounge', type: 'voice', topic: 'Drop-in audio and video lounge' },
+  { id: 'gaming', name: 'Gaming', type: 'voice', topic: 'Low latency voice chat for gaming' },
 ];
 
 export function App() {
@@ -23,18 +27,52 @@ export function App() {
   const [isEditingUsername, setIsEditingUsername] = useState(false);
   const [tempUsername, setTempUsername] = useState(username);
 
-  // Active channel
+  // Active channel & view mode
   const [activeChannelId, setActiveChannelId] = useState<string>('general');
   const [showUserList, setShowUserList] = useState<boolean>(true);
+  const [isCallViewActive, setIsCallViewActive] = useState<boolean>(false);
+
+  // Ref to route incoming socket messages to WebRTC handler
+  const handleSignalRef = useRef<((msg: Message) => Promise<void>) | null>(null);
 
   // WebSocket hook
-  const { status, messages, users, error, send, connect } = useSocket(
+  const { status, messages, users, error: socketError, send, sendSignal, connect } = useSocket(
     activeChannelId,
-    username
+    username,
+    {
+      onMessage: (msg) => {
+        if (handleSignalRef.current) {
+          handleSignalRef.current(msg);
+        }
+      },
+    }
   );
+
+  // WebRTC hook
+  const webrtc = useWebRTC({
+    room: activeChannelId,
+    username,
+    send,
+    sendSignal,
+    roomUsers: users,
+  });
+
+  // Keep ref updated
+  useEffect(() => {
+    handleSignalRef.current = webrtc.handleSignal;
+  }, [webrtc.handleSignal]);
 
   const activeChannel =
     DEFAULT_CHANNELS.find((c) => c.id === activeChannelId) || DEFAULT_CHANNELS[0];
+
+  // Auto show video grid when entering call, and auto hide when leaving
+  useEffect(() => {
+    if (webrtc.isInCall) {
+      setIsCallViewActive(true);
+    } else {
+      setIsCallViewActive(false);
+    }
+  }, [webrtc.isInCall]);
 
   const handleSendMessage = (content: string) => {
     send('chat', content);
@@ -47,6 +85,16 @@ export function App() {
       localStorage.setItem('weconnect_username', trimmed);
     }
     setIsEditingUsername(false);
+  };
+
+  const handleChannelSelect = (channelId: string) => {
+    const targetChannel = DEFAULT_CHANNELS.find((c) => c.id === channelId);
+    setActiveChannelId(channelId);
+
+    // If clicking a voice channel and not yet in call, join call automatically
+    if (targetChannel?.type === 'voice' && !webrtc.isInCall) {
+      webrtc.joinCall();
+    }
   };
 
   return (
@@ -111,25 +159,69 @@ export function App() {
       <ChannelSidebar
         channels={DEFAULT_CHANNELS}
         activeChannel={activeChannelId}
-        onSelectChannel={(id) => setActiveChannelId(id)}
+        onSelectChannel={handleChannelSelect}
         username={username}
         serverName="WeConnect"
         connectionStatus={status}
+        isInCall={webrtc.isInCall}
+        activeVoiceChannelName={activeChannel.name}
+        onLeaveCall={webrtc.leaveCall}
       />
 
-      {/* 3. Main Chat Area */}
-      <ChatArea
-        channelName={activeChannel.name}
-        channelTopic={activeChannel.topic}
-        messages={messages}
-        currentUsername={username}
-        connectionStatus={status}
-        errorMessage={error}
-        onSendMessage={handleSendMessage}
-        onReconnect={connect}
-        onToggleUserList={() => setShowUserList((prev) => !prev)}
-        showUserList={showUserList}
-      />
+      {/* 3. Center Area: Either VideoGrid or ChatArea (or Pip toggle) */}
+      <div className="flex-1 flex flex-col h-full min-w-0 relative">
+        {/* If in call and currently viewing chat, show Top In-Call Pip Banner */}
+        {webrtc.isInCall && !isCallViewActive && (
+          <div className="bg-discord-online/20 border-b border-discord-online/30 px-4 py-2 flex items-center justify-between text-xs font-semibold text-discord-online z-20">
+            <div className="flex items-center space-x-2">
+              <span className="w-2 h-2 rounded-full bg-discord-online animate-pulse" />
+              <span>You are currently in a voice/video call in #{activeChannel.name}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsCallViewActive(true)}
+              className="bg-discord-online text-white px-3 py-1 rounded hover:bg-discord-online/90 flex items-center space-x-1.5 transition-colors"
+            >
+              <Video className="w-3.5 h-3.5" />
+              <span>Expand Video Grid</span>
+            </button>
+          </div>
+        )}
+
+        {isCallViewActive ? (
+          <VideoGrid
+            localStream={webrtc.localStream}
+            peers={webrtc.peers}
+            currentUsername={username}
+            isAudioMuted={webrtc.isAudioMuted}
+            isVideoOff={webrtc.isVideoOff}
+            isScreenSharing={webrtc.isScreenSharing}
+            error={webrtc.error}
+            onToggleAudio={webrtc.toggleAudio}
+            onToggleVideo={webrtc.toggleVideo}
+            onToggleScreenShare={webrtc.toggleScreenShare}
+            onLeaveCall={webrtc.leaveCall}
+          />
+        ) : (
+          <ChatArea
+            channelName={activeChannel.name}
+            channelType={activeChannel.type}
+            channelTopic={activeChannel.topic}
+            messages={messages}
+            currentUsername={username}
+            connectionStatus={status}
+            errorMessage={socketError}
+            isInCall={webrtc.isInCall}
+            isCallViewActive={isCallViewActive}
+            onSendMessage={handleSendMessage}
+            onReconnect={connect}
+            onToggleUserList={() => setShowUserList((prev) => !prev)}
+            onToggleCallView={() => setIsCallViewActive((prev) => !prev)}
+            onJoinCall={webrtc.joinCall}
+            showUserList={showUserList}
+          />
+        )}
+      </div>
 
       {/* 4. Right User List */}
       {showUserList && (

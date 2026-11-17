@@ -1,5 +1,15 @@
 import React from 'react';
-import { Hash, Volume2, Mic, Headphones, Settings, ChevronDown, Plus } from 'lucide-react';
+import {
+  Hash,
+  Volume2,
+  Mic,
+  Headphones,
+  Settings,
+  ChevronDown,
+  Plus,
+  PhoneOff,
+  Signal,
+} from 'lucide-react';
 import clsx from 'clsx';
 import type { Channel } from '../types';
 
@@ -10,6 +20,9 @@ interface ChannelSidebarProps {
   username: string;
   serverName?: string;
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
+  isInCall?: boolean;
+  activeVoiceChannelName?: string;
+  onLeaveCall?: () => void;
 }
 
 export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
@@ -19,7 +32,13 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
   username,
   serverName = 'WeConnect',
   connectionStatus,
+  isInCall = false,
+  activeVoiceChannelName = 'Voice Lounge',
+  onLeaveCall,
 }) => {
+  const textChannels = channels.filter((c) => c.type !== 'voice');
+  const voiceChannels = channels.filter((c) => c.type === 'voice');
+
   return (
     <div className="w-60 bg-discord-darker flex flex-col h-full select-none border-r border-discord-darkest/40 flex-shrink-0">
       {/* Server Header */}
@@ -54,7 +73,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
           </div>
 
           <div className="space-y-0.5">
-            {channels.map((channel) => {
+            {textChannels.map((channel) => {
               const isActive = activeChannel === channel.id;
               return (
                 <button
@@ -90,19 +109,75 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
           </div>
         </div>
 
-        {/* Voice Channels Section (Demo category) */}
+        {/* Voice Channels Section */}
         <div>
           <div className="flex items-center justify-between px-2 mb-1 text-[11px] font-bold tracking-wider text-discord-muted uppercase">
             <span>Voice Channels</span>
           </div>
           <div className="space-y-0.5">
-            <div className="w-full flex items-center px-2 py-1.5 rounded-md text-sm font-medium text-discord-muted/60 cursor-not-allowed">
-              <Volume2 className="w-4 h-4 mr-2 flex-shrink-0" />
-              <span className="truncate">Lounge</span>
-            </div>
+            {voiceChannels.map((channel) => {
+              const isActive = activeChannel === channel.id;
+              return (
+                <button
+                  key={channel.id}
+                  onClick={() => onSelectChannel(channel.id)}
+                  type="button"
+                  className={clsx(
+                    'w-full flex items-center px-2 py-1.5 rounded-md text-sm font-medium transition-all group relative text-left',
+                    isActive
+                      ? 'bg-discord-active text-discord-heading'
+                      : 'text-discord-muted hover:bg-discord-hover hover:text-discord-text'
+                  )}
+                >
+                  {isActive && (
+                    <span className="absolute -left-2 w-1 h-5 bg-white rounded-r-full" />
+                  )}
+                  <Volume2
+                    className={clsx('w-4 h-4 mr-2 flex-shrink-0', {
+                      'text-discord-online animate-pulse': isInCall && isActive,
+                      'text-discord-heading': isActive && !isInCall,
+                      'text-discord-muted group-hover:text-discord-text': !isActive,
+                    })}
+                  />
+                  <span className="truncate flex-1">{channel.name}</span>
+                  {isInCall && isActive && (
+                    <span className="text-[10px] text-discord-online font-bold uppercase tracking-wider">
+                      Live
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
+
+      {/* Voice Connected Banner (When in Call) */}
+      {isInCall && (
+        <div className="bg-discord-darkest/90 border-t border-discord-darkest px-3 py-2 flex items-center justify-between select-none">
+          <div className="flex items-center space-x-2 text-discord-online min-w-0">
+            <Signal className="w-4 h-4 flex-shrink-0" />
+            <div className="truncate leading-tight">
+              <div className="text-discord-online font-bold text-[11px] tracking-wide">
+                Voice Connected
+              </div>
+              <div className="text-discord-muted text-[10px] truncate max-w-[130px]">
+                {activeVoiceChannelName} / WebRTC
+              </div>
+            </div>
+          </div>
+          {onLeaveCall && (
+            <button
+              type="button"
+              onClick={onLeaveCall}
+              className="p-1 hover:bg-discord-danger/20 rounded text-discord-muted hover:text-discord-danger transition-colors flex-shrink-0"
+              title="Disconnect Call"
+            >
+              <PhoneOff className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* User Status Bar at the bottom */}
       <div className="h-14 bg-discord-darkest/70 px-2 flex items-center justify-between border-t border-discord-darkest/40">

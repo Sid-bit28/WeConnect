@@ -5,6 +5,7 @@ interface UseSocketOptions {
   serverUrl?: string;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
+  onMessage?: (msg: Message) => void;
 }
 
 export function useSocket(
@@ -16,6 +17,7 @@ export function useSocket(
     serverUrl = 'ws://localhost:8080/ws',
     reconnectInterval = 3000,
     maxReconnectAttempts = 5,
+    onMessage,
   } = options;
 
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
@@ -27,6 +29,11 @@ export function useSocket(
   const reconnectAttemptsRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isUnmountedRef = useRef<boolean>(false);
+  const onMessageRef = useRef<((msg: Message) => void) | undefined>(onMessage);
+
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+  }, [onMessage]);
 
   // Clear messages & users when room changes
   useEffect(() => {
@@ -68,6 +75,11 @@ export function useSocket(
         if (isUnmountedRef.current) return;
         try {
           const msg: Message = JSON.parse(event.data);
+
+          // Forward to custom listener if subscribed
+          if (onMessageRef.current) {
+            onMessageRef.current(msg);
+          }
 
           switch (msg.type) {
             case 'chat':
@@ -114,7 +126,9 @@ export function useSocket(
               break;
 
             case 'signal':
-              // Handled by consumers if WebRTC is attached
+            case 'call-join':
+            case 'call-leave':
+              // Handled by onMessage callback / WebRTC
               break;
 
             default:
@@ -202,6 +216,13 @@ export function useSocket(
     [room, username]
   );
 
+  const sendSignal = useCallback(
+    (target: string, signalType: string, payload?: any): boolean => {
+      return send('signal', undefined, { target, signalType, payload });
+    },
+    [send]
+  );
+
   useEffect(() => {
     isUnmountedRef.current = false;
     connect();
@@ -226,6 +247,7 @@ export function useSocket(
     users,
     error,
     send,
+    sendSignal,
     connect,
     disconnect,
   };

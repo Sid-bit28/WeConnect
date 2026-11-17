@@ -9,33 +9,45 @@ import {
   Users,
   Bell,
   Pin,
+  Video,
+  Volume2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Message, ConnectionStatus } from '../types';
 
 interface ChatAreaProps {
   channelName: string;
+  channelType?: 'text' | 'voice';
   channelTopic?: string;
   messages: Message[];
   currentUsername: string;
   connectionStatus: ConnectionStatus;
   errorMessage?: string | null;
+  isInCall?: boolean;
+  isCallViewActive?: boolean;
   onSendMessage: (content: string) => void;
   onReconnect?: () => void;
   onToggleUserList?: () => void;
+  onToggleCallView?: () => void;
+  onJoinCall?: () => void;
   showUserList?: boolean;
 }
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
   channelName,
+  channelType = 'text',
   channelTopic = 'Welcome to the channel! Keep conversations friendly and constructive.',
   messages,
   currentUsername,
   connectionStatus,
   errorMessage,
+  isInCall = false,
+  isCallViewActive = false,
   onSendMessage,
   onReconnect,
   onToggleUserList,
+  onToggleCallView,
+  onJoinCall,
   showUserList = true,
 }) => {
   const [inputText, setInputText] = useState('');
@@ -66,7 +78,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  // Consistent color generation for user avatars based on username
   const getAvatarColor = (name: string) => {
     const colors = [
       'bg-indigo-600',
@@ -82,8 +93,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     for (let i = 0; i < name.length; i++) {
       hash = name.charCodeAt(i) + ((hash << 5) - hash);
     }
-    const index = Math.abs(hash) % colors.length;
-    return colors[index];
+    return colors[Math.abs(hash) % colors.length];
   };
 
   return (
@@ -91,7 +101,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       {/* Channel Header */}
       <div className="h-12 border-b border-discord-darkest px-4 flex items-center justify-between shadow-sm bg-discord-dark z-10 flex-shrink-0">
         <div className="flex items-center space-x-2 truncate">
-          <Hash className="w-5 h-5 text-discord-muted flex-shrink-0" />
+          {channelType === 'voice' ? (
+            <Volume2 className="w-5 h-5 text-discord-muted flex-shrink-0" />
+          ) : (
+            <Hash className="w-5 h-5 text-discord-muted flex-shrink-0" />
+          )}
           <h3 className="font-bold text-discord-heading text-sm truncate">{channelName}</h3>
           <span className="text-discord-muted text-xs">|</span>
           <span className="text-discord-muted text-xs truncate max-w-md hidden sm:inline">
@@ -100,6 +114,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         </div>
 
         <div className="flex items-center space-x-3 text-discord-muted">
+          {/* Join Call or Toggle Video View Button */}
+          {isInCall ? (
+            <button
+              type="button"
+              onClick={onToggleCallView}
+              className={clsx(
+                'px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition-colors',
+                isCallViewActive
+                  ? 'bg-discord-blurple text-white hover:bg-discord-blurple-hover'
+                  : 'bg-discord-online/20 text-discord-online hover:bg-discord-online/30'
+              )}
+              title={isCallViewActive ? 'Switch to Chat View' : 'Switch to Video Grid'}
+            >
+              <Video className="w-3.5 h-3.5" />
+              <span>{isCallViewActive ? 'Chat View' : 'Call Grid'}</span>
+            </button>
+          ) : (
+            onJoinCall && (
+              <button
+                type="button"
+                onClick={onJoinCall}
+                className="bg-discord-darker hover:bg-discord-hover text-discord-text hover:text-white px-2.5 py-1 rounded text-xs font-medium flex items-center space-x-1.5 transition-colors border border-white/5"
+                title="Start Video Call"
+              >
+                <Video className="w-3.5 h-3.5 text-discord-online" />
+                <span>Join Call</span>
+              </button>
+            )
+          )}
+
           <button
             type="button"
             className="hover:text-discord-text transition-colors p-1"
@@ -166,22 +210,30 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
       {/* Messages List Area */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        {/* Welcome Banner when empty */}
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-12 select-none">
             <div className="w-16 h-16 rounded-full bg-discord-darker flex items-center justify-center mb-3">
-              <Hash className="w-8 h-8 text-discord-muted" />
+              {channelType === 'voice' ? (
+                <Volume2 className="w-8 h-8 text-discord-muted" />
+              ) : (
+                <Hash className="w-8 h-8 text-discord-muted" />
+              )}
             </div>
             <h2 className="text-2xl font-bold text-discord-heading mb-1">
-              Welcome to #{channelName}!
+              Welcome to {channelType === 'voice' ? '' : '#'}{channelName}!
             </h2>
             <p className="text-discord-muted text-sm max-w-sm">
-              This is the beginning of the #{channelName} channel. Start typing a message below to begin chatting.
+              This is the beginning of the {channelName} channel. Start typing a message below or join a voice/video call above.
             </p>
           </div>
         ) : (
           messages.map((msg, index) => {
-            const isSystem = msg.type === 'join' || msg.type === 'leave' || msg.type === 'error';
+            const isSystem =
+              msg.type === 'join' ||
+              msg.type === 'leave' ||
+              msg.type === 'error' ||
+              msg.type === 'call-join' ||
+              msg.type === 'call-leave';
 
             if (isSystem) {
               return (
@@ -191,12 +243,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 >
                   <span
                     className={clsx('w-1.5 h-1.5 rounded-full', {
-                      'bg-discord-online': msg.type === 'join',
-                      'bg-discord-muted': msg.type === 'leave',
+                      'bg-discord-online': msg.type === 'join' || msg.type === 'call-join',
+                      'bg-discord-muted': msg.type === 'leave' || msg.type === 'call-leave',
                       'bg-discord-danger': msg.type === 'error',
                     })}
                   />
-                  <span>{msg.content}</span>
+                  <span>
+                    {msg.type === 'call-join'
+                      ? `${msg.sender} started or joined a video call.`
+                      : msg.type === 'call-leave'
+                      ? `${msg.sender} left the call.`
+                      : msg.content}
+                  </span>
                   <span className="text-[10px] text-discord-muted/60 not-italic">
                     {formatTimestamp(msg.timestamp)}
                   </span>
@@ -269,7 +327,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`Message #${channelName}`}
+            placeholder={`Message ${channelType === 'voice' ? '' : '#'}${channelName}`}
             disabled={connectionStatus !== 'connected'}
             className="flex-1 bg-transparent text-sm text-discord-heading placeholder-discord-muted focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
           />
