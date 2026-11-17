@@ -1,0 +1,16 @@
+# Binaries and build artifacts
+server/server
+server/*.exe
+server/*.test
+*.out
+
+# Node dependencies and build
+client/node_modules/
+client/dist/
+client/.vite/
+
+# Logs and environment
+*.log
+.env
+.env.local
+.DS_Store
