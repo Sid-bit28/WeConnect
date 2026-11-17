@@ -1,16 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Hash,
-  Send,
+  Volume2,
+  Video,
+  Users,
+  ArrowUp,
   AlertCircle,
   RefreshCw,
-  PlusCircle,
-  Smile,
-  Users,
-  Bell,
-  Pin,
-  Video,
-  Volume2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Message, ConnectionStatus } from '../types';
@@ -25,6 +21,7 @@ interface ChatAreaProps {
   errorMessage?: string | null;
   isInCall?: boolean;
   isCallViewActive?: boolean;
+  memberCount?: number;
   onSendMessage: (content: string) => void;
   onReconnect?: () => void;
   onToggleUserList?: () => void;
@@ -33,16 +30,19 @@ interface ChatAreaProps {
   showUserList?: boolean;
 }
 
+const GROUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
 export const ChatArea: React.FC<ChatAreaProps> = ({
   channelName,
   channelType = 'text',
-  channelTopic = 'Welcome to the channel! Keep conversations friendly and constructive.',
+  channelTopic,
   messages,
   currentUsername,
   connectionStatus,
   errorMessage,
   isInCall = false,
   isCallViewActive = false,
+  memberCount = 1,
   onSendMessage,
   onReconnect,
   onToggleUserList,
@@ -53,7 +53,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto-scroll to bottom when messages update
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -74,123 +73,118 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const formatTimestamp = (timestamp?: number) => {
     if (!timestamp) return '';
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return new Date(timestamp).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   };
 
-  const getAvatarColor = (name: string) => {
-    const colors = [
-      'bg-indigo-600',
-      'bg-emerald-600',
-      'bg-amber-600',
-      'bg-rose-600',
-      'bg-cyan-600',
-      'bg-purple-600',
-      'bg-blue-600',
-      'bg-teal-600',
+  const getAvatarStyle = (name: string) => {
+    const styles = [
+      'bg-indigo-500/15 text-indigo-300 border-indigo-500/25',
+      'bg-emerald-500/15 text-emerald-300 border-emerald-500/25',
+      'bg-amber-500/15 text-amber-300 border-amber-500/25',
+      'bg-rose-500/15 text-rose-300 border-rose-500/25',
+      'bg-cyan-500/15 text-cyan-300 border-cyan-500/25',
+      'bg-violet-500/15 text-violet-300 border-violet-500/25',
     ];
     let hash = 0;
     for (let i = 0; i < name.length; i++) {
       hash = name.charCodeAt(i) + ((hash << 5) - hash);
     }
-    return colors[Math.abs(hash) % colors.length];
+    return styles[Math.abs(hash) % styles.length];
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-discord-dark h-full min-w-0">
-      {/* Channel Header */}
-      <div className="h-12 border-b border-discord-darkest px-4 flex items-center justify-between shadow-sm bg-discord-dark z-10 flex-shrink-0">
-        <div className="flex items-center space-x-2 truncate">
+    <div className="flex-1 flex flex-col bg-canvas h-full min-w-0">
+      {/* Refined Minimal Channel Header */}
+      <header className="h-14 border-b border-white/[0.07] px-6 flex items-center justify-between bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0">
+        <div className="flex items-center space-x-2.5 min-w-0">
           {channelType === 'voice' ? (
-            <Volume2 className="w-5 h-5 text-discord-muted flex-shrink-0" />
+            <Volume2 className="w-4 h-4 text-text-muted flex-shrink-0" />
           ) : (
-            <Hash className="w-5 h-5 text-discord-muted flex-shrink-0" />
+            <Hash className="w-4 h-4 text-text-muted flex-shrink-0" />
           )}
-          <h3 className="font-bold text-discord-heading text-sm truncate">{channelName}</h3>
-          <span className="text-discord-muted text-xs">|</span>
-          <span className="text-discord-muted text-xs truncate max-w-md hidden sm:inline">
-            {channelTopic}
-          </span>
+          <h2 className="font-semibold text-sm text-text-primary tracking-tight truncate">
+            {channelName}
+          </h2>
+          {channelTopic && (
+            <>
+              <span className="text-white/10 hidden sm:inline">/</span>
+              <span className="text-xs text-text-muted truncate max-w-md hidden sm:inline">
+                {channelTopic}
+              </span>
+            </>
+          )}
         </div>
 
-        <div className="flex items-center space-x-3 text-discord-muted">
-          {/* Join Call or Toggle Video View Button */}
+        {/* Purposeful Actions Only */}
+        <div className="flex items-center space-x-2.5 flex-shrink-0">
           {isInCall ? (
             <button
               type="button"
               onClick={onToggleCallView}
               className={clsx(
-                'px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition-colors',
+                'px-3 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition-all',
                 isCallViewActive
-                  ? 'bg-discord-blurple text-white hover:bg-discord-blurple-hover'
-                  : 'bg-discord-online/20 text-discord-online hover:bg-discord-online/30'
+                  ? 'bg-accent text-white hover:bg-accent-hover'
+                  : 'bg-online/15 text-online border border-online/25 hover:bg-online/25'
               )}
-              title={isCallViewActive ? 'Switch to Chat View' : 'Switch to Video Grid'}
             >
               <Video className="w-3.5 h-3.5" />
-              <span>{isCallViewActive ? 'Chat View' : 'Call Grid'}</span>
+              <span>{isCallViewActive ? 'Back to Chat' : 'Call Stage'}</span>
             </button>
           ) : (
             onJoinCall && (
               <button
                 type="button"
                 onClick={onJoinCall}
-                className="bg-discord-darker hover:bg-discord-hover text-discord-text hover:text-white px-2.5 py-1 rounded text-xs font-medium flex items-center space-x-1.5 transition-colors border border-white/5"
-                title="Start Video Call"
+                className="px-3 py-1.5 rounded-lg bg-surface hover:bg-card border border-white/[0.08] text-text-primary text-xs font-medium flex items-center space-x-1.5 transition-all"
               >
-                <Video className="w-3.5 h-3.5 text-discord-online" />
+                <Video className="w-3.5 h-3.5 text-online" />
                 <span>Join Call</span>
               </button>
             )
           )}
 
-          <button
-            type="button"
-            className="hover:text-discord-text transition-colors p-1"
-            title="Notification Settings"
-          >
-            <Bell className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            className="hover:text-discord-text transition-colors p-1"
-            title="Pinned Messages"
-          >
-            <Pin className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={onToggleUserList}
-            className={clsx(
-              'p-1 transition-colors rounded',
-              showUserList ? 'text-discord-heading' : 'hover:text-discord-text'
-            )}
-            title="Member List"
-          >
-            <Users className="w-4 h-4" />
-          </button>
+          {onToggleUserList && (
+            <button
+              type="button"
+              onClick={onToggleUserList}
+              className={clsx(
+                'px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center space-x-1.5 transition-all',
+                showUserList
+                  ? 'bg-card border-white/[0.1] text-text-primary'
+                  : 'bg-transparent border-transparent text-text-muted hover:text-text-primary hover:bg-surface'
+              )}
+              title="Toggle Member List"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>{memberCount}</span>
+            </button>
+          )}
         </div>
-      </div>
+      </header>
 
-      {/* Connection Status Banner (if not connected) */}
+      {/* Connection Status Banner */}
       {connectionStatus !== 'connected' && (
         <div
           className={clsx(
-            'px-4 py-2 flex items-center justify-between text-xs font-medium z-10 transition-colors',
+            'px-6 py-2 flex items-center justify-between text-xs font-medium border-b z-10',
             connectionStatus === 'connecting'
-              ? 'bg-discord-warning/20 text-discord-warning border-b border-discord-warning/30'
-              : 'bg-discord-danger/20 text-discord-danger border-b border-discord-danger/30'
+              ? 'bg-warning-muted text-warning border-warning/20'
+              : 'bg-danger-muted text-danger border-danger/20'
           )}
         >
           <div className="flex items-center space-x-2">
             {connectionStatus === 'connecting' ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
             ) : (
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
             )}
             <span>
               {connectionStatus === 'connecting'
-                ? 'Connecting to WebSocket server...'
+                ? 'Connecting to server...'
                 : errorMessage || 'Disconnected from server.'}
             </span>
           </div>
@@ -199,162 +193,174 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <button
               onClick={onReconnect}
               type="button"
-              className="bg-discord-danger hover:bg-discord-danger/80 text-white px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1 transition-colors"
+              className="px-2.5 py-1 rounded-md bg-danger hover:bg-danger-hover text-white text-xs font-medium transition-colors"
             >
-              <RefreshCw className="w-3 h-3" />
-              <span>Retry</span>
+              Reconnect
             </button>
           )}
         </div>
       )}
 
-      {/* Messages List Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      {/* Messages Feed */}
+      <div className="flex-1 overflow-y-auto px-6 py-6">
         {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center py-12 select-none">
-            <div className="w-16 h-16 rounded-full bg-discord-darker flex items-center justify-center mb-3">
+          <div className="flex flex-col items-center justify-center h-full text-center max-w-sm mx-auto select-none">
+            <div className="w-12 h-12 rounded-2xl bg-surface border border-white/[0.07] flex items-center justify-center mb-4">
               {channelType === 'voice' ? (
-                <Volume2 className="w-8 h-8 text-discord-muted" />
+                <Volume2 className="w-5 h-5 text-text-muted" />
               ) : (
-                <Hash className="w-8 h-8 text-discord-muted" />
+                <Hash className="w-5 h-5 text-text-muted" />
               )}
             </div>
-            <h2 className="text-2xl font-bold text-discord-heading mb-1">
-              Welcome to {channelType === 'voice' ? '' : '#'}{channelName}!
-            </h2>
-            <p className="text-discord-muted text-sm max-w-sm">
-              This is the beginning of the {channelName} channel. Start typing a message below or join a voice/video call above.
+            <h3 className="text-base font-semibold text-text-primary mb-1">
+              Welcome to {channelType === 'voice' ? '' : '#'}{channelName}
+            </h3>
+            <p className="text-xs text-text-secondary leading-relaxed">
+              This is the start of the conversation. Send a message below or launch a live call.
             </p>
           </div>
         ) : (
-          messages.map((msg, index) => {
-            const isSystem =
-              msg.type === 'join' ||
-              msg.type === 'leave' ||
-              msg.type === 'error' ||
-              msg.type === 'call-join' ||
-              msg.type === 'call-leave';
+          <div className="space-y-1 max-w-4xl">
+            {messages.map((msg, index) => {
+              const isSystem =
+                msg.type === 'join' ||
+                msg.type === 'leave' ||
+                msg.type === 'error' ||
+                msg.type === 'call-join' ||
+                msg.type === 'call-leave';
 
-            if (isSystem) {
-              return (
-                <div
-                  key={`${msg.timestamp || index}-${msg.sender}`}
-                  className="flex items-center space-x-2 text-xs py-1 px-2 rounded font-medium text-discord-muted italic"
-                >
-                  <span
-                    className={clsx('w-1.5 h-1.5 rounded-full', {
-                      'bg-discord-online': msg.type === 'join' || msg.type === 'call-join',
-                      'bg-discord-muted': msg.type === 'leave' || msg.type === 'call-leave',
-                      'bg-discord-danger': msg.type === 'error',
-                    })}
-                  />
-                  <span>
-                    {msg.type === 'call-join'
-                      ? `${msg.sender} started or joined a video call.`
-                      : msg.type === 'call-leave'
-                      ? `${msg.sender} left the call.`
-                      : msg.content}
-                  </span>
-                  <span className="text-[10px] text-discord-muted/60 not-italic">
-                    {formatTimestamp(msg.timestamp)}
-                  </span>
-                </div>
-              );
-            }
-
-            const isSelf = msg.sender === currentUsername;
-
-            return (
-              <div
-                key={`${msg.timestamp || index}-${msg.sender}`}
-                className="flex items-start space-x-3 group hover:bg-black/10 -mx-4 px-4 py-1 rounded transition-colors"
-              >
-                {/* Avatar */}
-                <div
-                  className={clsx(
-                    'w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0 select-none shadow-sm',
-                    getAvatarColor(msg.sender)
-                  )}
-                >
-                  {msg.sender.charAt(0).toUpperCase()}
-                </div>
-
-                {/* Message Body */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline space-x-2">
+              if (isSystem) {
+                return (
+                  <div
+                    key={`${msg.timestamp || index}-${msg.sender}`}
+                    className="flex items-center space-x-2 py-1.5 px-2 text-[11px] text-text-muted select-none"
+                  >
                     <span
-                      className={clsx('font-semibold text-sm hover:underline cursor-pointer', {
-                        'text-discord-blurple': isSelf,
-                        'text-discord-heading': !isSelf,
+                      className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', {
+                        'bg-online': msg.type === 'join' || msg.type === 'call-join',
+                        'bg-text-muted': msg.type === 'leave' || msg.type === 'call-leave',
+                        'bg-danger': msg.type === 'error',
                       })}
-                    >
-                      {msg.sender}
+                    />
+                    <span>
+                      {msg.type === 'call-join'
+                        ? `${msg.sender} joined the live call`
+                        : msg.type === 'call-leave'
+                        ? `${msg.sender} left the call`
+                        : msg.content}
                     </span>
-                    {isSelf && (
-                      <span className="bg-discord-blurple/20 text-discord-blurple text-[10px] font-bold px-1.5 py-0.2 rounded uppercase tracking-wider">
-                        You
-                      </span>
-                    )}
-                    <span className="text-[11px] text-discord-muted select-none">
+                    <span className="text-[10px] opacity-60">
                       {formatTimestamp(msg.timestamp)}
                     </span>
                   </div>
+                );
+              }
 
-                  <div className="text-discord-text text-sm break-words mt-0.5 whitespace-pre-wrap leading-relaxed">
-                    {msg.content}
+              // Check if consecutive message from the same sender within 5 minutes
+              const prevMsg = index > 0 ? messages[index - 1] : null;
+              const prevIsNormal =
+                prevMsg &&
+                prevMsg.type !== 'join' &&
+                prevMsg.type !== 'leave' &&
+                prevMsg.type !== 'error' &&
+                prevMsg.type !== 'call-join' &&
+                prevMsg.type !== 'call-leave';
+
+              const isGrouped =
+                prevIsNormal &&
+                prevMsg.sender === msg.sender &&
+                msg.timestamp &&
+                prevMsg.timestamp &&
+                msg.timestamp - prevMsg.timestamp <= GROUP_WINDOW_MS;
+
+              const isSelf = msg.sender === currentUsername;
+
+              if (isGrouped) {
+                return (
+                  <div
+                    key={`${msg.timestamp || index}-${msg.sender}`}
+                    className="flex items-baseline pl-[44px] pr-3 py-0.5 -mx-2 rounded-lg hover:bg-surface/60 transition-colors group relative"
+                  >
+                    <span className="absolute left-2 text-[10px] text-text-muted opacity-0 group-hover:opacity-100 transition-opacity select-none w-8 text-right">
+                      {formatTimestamp(msg.timestamp)}
+                    </span>
+                    <div className="text-sm text-text-primary/90 break-words whitespace-pre-wrap leading-relaxed">
+                      {msg.content}
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={`${msg.timestamp || index}-${msg.sender}`}
+                  className="flex items-start space-x-3 pt-3 pb-0.5 px-2 -mx-2 rounded-lg hover:bg-surface/60 transition-colors group"
+                >
+                  {/* Minimal Avatar */}
+                  <div
+                    className={clsx(
+                      'w-8 h-8 rounded-full border flex items-center justify-center font-semibold text-xs flex-shrink-0 select-none mt-0.5',
+                      getAvatarStyle(msg.sender)
+                    )}
+                  >
+                    {msg.sender.charAt(0).toUpperCase()}
+                  </div>
+
+                  {/* Message Body */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline space-x-2">
+                      <span
+                        className={clsx('font-semibold text-xs', {
+                          'text-accent': isSelf,
+                          'text-text-primary': !isSelf,
+                        })}
+                      >
+                        {msg.sender}
+                      </span>
+                      <span className="text-[10px] text-text-muted select-none">
+                        {formatTimestamp(msg.timestamp)}
+                      </span>
+                    </div>
+
+                    <div className="text-sm text-text-primary/90 break-words mt-0.5 whitespace-pre-wrap leading-relaxed">
+                      {msg.content}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })
+              );
+            })}
+          </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Message Input Container */}
-      <div className="px-4 pb-6 pt-1 flex-shrink-0">
-        <div className="bg-discord-input rounded-lg px-4 py-2.5 flex items-center shadow-inner focus-within:ring-1 focus-within:ring-discord-blurple transition-all">
-          <button
-            type="button"
-            className="text-discord-muted hover:text-discord-text transition-colors mr-3"
-            title="Add File"
-          >
-            <PlusCircle className="w-5 h-5" />
-          </button>
-
+      {/* Floating Rounded Input Bar */}
+      <div className="px-6 pb-5 pt-2 flex-shrink-0">
+        <div className="max-w-4xl bg-surface border border-white/[0.08] focus-within:border-accent/60 rounded-xl px-4 py-2 flex items-center space-x-3 transition-colors shadow-sm">
           <input
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`Message ${channelType === 'voice' ? '' : '#'}${channelName}`}
+            placeholder={`Message ${channelType === 'voice' ? '' : '#'}${channelName}...`}
             disabled={connectionStatus !== 'connected'}
-            className="flex-1 bg-transparent text-sm text-discord-heading placeholder-discord-muted focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50"
           />
 
-          <div className="flex items-center space-x-2 ml-2">
-            <button
-              type="button"
-              className="text-discord-muted hover:text-discord-text transition-colors p-1"
-              title="Add Emoji"
-            >
-              <Smile className="w-5 h-5" />
-            </button>
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={!inputText.trim() || connectionStatus !== 'connected'}
-              className={clsx(
-                'p-1.5 rounded-md transition-all',
-                inputText.trim() && connectionStatus === 'connected'
-                  ? 'bg-discord-blurple text-white hover:bg-discord-blurple-hover cursor-pointer'
-                  : 'text-discord-muted opacity-40 cursor-not-allowed'
-              )}
-              title="Send Message"
-            >
-              <Send className="w-4 h-4" />
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!inputText.trim() || connectionStatus !== 'connected'}
+            className={clsx(
+              'w-7 h-7 rounded-lg flex items-center justify-center transition-all flex-shrink-0',
+              inputText.trim() && connectionStatus === 'connected'
+                ? 'bg-accent text-white hover:bg-accent-hover cursor-pointer shadow-sm'
+                : 'bg-card text-text-muted opacity-40 cursor-not-allowed'
+            )}
+            title="Send"
+          >
+            <ArrowUp className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </div>

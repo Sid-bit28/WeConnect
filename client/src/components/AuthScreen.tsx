@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Radio, AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle, Loader2, ArrowRight } from 'lucide-react';
 
 interface AuthScreenProps {
   onLogin: (username: string, password: string) => Promise<boolean>;
@@ -55,113 +55,117 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const displayError = localError || error;
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-discord-darkest text-discord-text p-4 select-none relative overflow-hidden font-sans">
-      {/* Background ambient lighting */}
-      <div className="absolute w-[500px] h-[500px] bg-discord-blurple/10 rounded-full blur-3xl pointer-events-none -top-24 -left-24" />
-      <div className="absolute w-[400px] h-[400px] bg-discord-online/5 rounded-full blur-3xl pointer-events-none -bottom-20 -right-20" />
+    <div className="flex h-screen w-screen items-center justify-center bg-canvas text-text-primary p-4 select-none relative overflow-hidden">
+      {/* Subtle modern radial ambient background */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-accent/5 rounded-full blur-[120px] pointer-events-none" />
 
-      {/* Main Auth Card */}
-      <div className="relative w-full max-w-md bg-discord-darker rounded-xl shadow-2xl border border-white/5 overflow-hidden p-8 sm:p-10 z-10">
-        {/* Branding & Header */}
-        <div className="text-center mb-7">
-          <div className="w-16 h-16 bg-discord-blurple rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg ring-4 ring-discord-blurple/20">
-            <Radio className="w-9 h-9 text-white" />
+      {/* Main Container */}
+      <div className="relative w-full max-w-sm z-10">
+        {/* Brand Header */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-accent/10 border border-accent/20 mb-3.5 shadow-sm">
+            <span className="text-accent font-bold text-lg tracking-tight">W</span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-discord-heading tracking-tight">
-            {isRegister ? 'Create an account' : 'Welcome back!'}
+          <h1 className="text-xl font-semibold text-text-primary tracking-tight">
+            WeConnect
           </h1>
-          <p className="text-sm text-discord-muted mt-1.5">
+          <p className="text-xs text-text-secondary mt-1">
             {isRegister
-              ? 'Join WeConnect to start chatting, calling, and sharing.'
-              : "We're excited to see you again! Please log in to continue."}
+              ? 'Create a workspace account to begin'
+              : 'Sign in to access channels and calls'}
           </p>
         </div>
 
-        {/* Error Alert */}
-        {displayError && (
-          <div className="mb-5 bg-discord-danger/15 border border-discord-danger/30 rounded-lg p-3 flex items-start space-x-2.5 text-xs text-discord-danger font-medium leading-relaxed">
-            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-            <span>{displayError}</span>
-          </div>
-        )}
-
-        {/* Auth Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-bold tracking-wider uppercase text-discord-muted mb-1.5">
-              Username <span className="text-discord-danger">*</span>
-            </label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              disabled={submitting}
-              autoFocus
-              className="w-full bg-discord-darkest text-discord-heading px-3.5 py-2.5 rounded-md border border-black/50 focus:border-discord-blurple focus:ring-1 focus:ring-discord-blurple focus:outline-none text-sm transition-all"
-              placeholder="Enter your username"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold tracking-wider uppercase text-discord-muted mb-1.5">
-              Password <span className="text-discord-danger">*</span>
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={submitting}
-              className="w-full bg-discord-darkest text-discord-heading px-3.5 py-2.5 rounded-md border border-black/50 focus:border-discord-blurple focus:ring-1 focus:ring-discord-blurple focus:outline-none text-sm transition-all"
-              placeholder="Enter your password"
-            />
+        {/* Card */}
+        <div className="bg-surface border border-white/[0.08] rounded-2xl p-6 sm:p-7 shadow-2xl backdrop-blur-sm">
+          {/* Tabs */}
+          <div className="flex rounded-lg bg-canvas/80 p-0.5 border border-white/[0.04] mb-5">
+            <button
+              type="button"
+              onClick={() => {
+                setIsRegister(false);
+                setLocalError(null);
+                if (onClearError) onClearError();
+              }}
+              className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+                !isRegister
+                  ? 'bg-card text-text-primary shadow-sm'
+                  : 'text-text-muted hover:text-text-secondary'
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsRegister(true);
+                setLocalError(null);
+                if (onClearError) onClearError();
+              }}
+              className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+                isRegister
+                  ? 'bg-card text-text-primary shadow-sm'
+                  : 'text-text-muted hover:text-text-secondary'
+              }`}
+            >
+              Register
+            </button>
           </div>
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full bg-discord-blurple hover:bg-discord-blurple-hover disabled:opacity-50 text-white font-semibold py-2.5 rounded-md transition-all text-sm flex items-center justify-center space-x-2 shadow-md mt-6 cursor-pointer"
-          >
-            {submitting ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              <span>{isRegister ? 'Register' : 'Log In'}</span>
-            )}
-          </button>
-        </form>
-
-        {/* Toggle Login / Register */}
-        <div className="mt-6 text-xs text-discord-muted text-center pt-2 border-t border-white/5">
-          {isRegister ? (
-            <span>
-              Already have an account?{' '}
-              <button
-                type="button"
-                onClick={() => {
-                  setIsRegister(false);
-                  setLocalError(null);
-                  if (onClearError) onClearError();
-                }}
-                className="text-discord-blurple hover:underline font-semibold ml-1 cursor-pointer"
-              >
-                Log In
-              </button>
-            </span>
-          ) : (
-            <span>
-              Need an account?{' '}
-              <button
-                type="button"
-                onClick={() => {
-                  setIsRegister(true);
-                  setLocalError(null);
-                  if (onClearError) onClearError();
-                }}
-                className="text-discord-blurple hover:underline font-semibold ml-1 cursor-pointer"
-              >
-                Register
-              </button>
-            </span>
+          {/* Error Banner */}
+          {displayError && (
+            <div className="mb-4 bg-danger-muted border border-danger/20 rounded-lg p-2.5 flex items-start space-x-2 text-xs text-danger font-medium">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span className="leading-snug">{displayError}</span>
+            </div>
           )}
+
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="space-y-3.5">
+            <div>
+              <label className="block text-[11px] font-medium uppercase tracking-wider text-text-secondary mb-1.5">
+                Username
+              </label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                disabled={submitting}
+                autoFocus
+                className="w-full bg-input text-text-primary px-3 py-2 rounded-lg border border-white/[0.08] focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none text-xs transition-colors placeholder:text-text-muted/60"
+                placeholder="Enter username"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium uppercase tracking-wider text-text-secondary mb-1.5">
+                Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={submitting}
+                className="w-full bg-input text-text-primary px-3 py-2 rounded-lg border border-white/[0.08] focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none text-xs transition-colors placeholder:text-text-muted/60"
+                placeholder="••••••••"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full mt-5 bg-accent hover:bg-accent-hover disabled:opacity-50 text-white font-medium py-2 px-3 rounded-lg text-xs transition-all shadow-sm flex items-center justify-center space-x-1.5 cursor-pointer"
+            >
+              {submitting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <>
+                  <span>{isRegister ? 'Create Account' : 'Continue'}</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </>
+              )}
+            </button>
+          </form>
         </div>
       </div>
     </div>

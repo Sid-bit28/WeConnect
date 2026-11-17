@@ -1,6 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import clsx from 'clsx';
-import { MicOff, VideoOff, ScreenShare } from 'lucide-react';
+import { MicOff, VideoOff, ScreenShare, MessageSquare } from 'lucide-react';
 import type { PeerStream } from '../types';
 import { CallControls } from './CallControls';
 
@@ -37,28 +37,26 @@ const VideoTile: React.FC<VideoTileProps> = ({
 
   const hasVideoTrack = stream && stream.getVideoTracks().length > 0 && !isVideoOff;
 
-  const getAvatarColor = (name: string) => {
-    const colors = [
-      'bg-indigo-600',
-      'bg-emerald-600',
-      'bg-amber-600',
-      'bg-rose-600',
-      'bg-cyan-600',
-      'bg-purple-600',
-      'bg-blue-600',
-      'bg-teal-600',
+  const getAvatarStyle = (name: string) => {
+    const styles = [
+      'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
+      'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+      'bg-amber-500/15 text-amber-300 border-amber-500/30',
+      'bg-rose-500/15 text-rose-300 border-rose-500/30',
+      'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',
+      'bg-violet-500/15 text-violet-300 border-violet-500/30',
     ];
     let hash = 0;
     for (let i = 0; i < name.length; i++) {
       hash = name.charCodeAt(i) + ((hash << 5) - hash);
     }
-    return colors[Math.abs(hash) % colors.length];
+    return styles[Math.abs(hash) % styles.length];
   };
 
   return (
     <div
       className={clsx(
-        'relative bg-discord-darkest rounded-xl overflow-hidden aspect-video flex items-center justify-center border border-white/5 shadow-md group',
+        'relative bg-surface rounded-xl overflow-hidden aspect-video flex items-center justify-center border border-white/[0.08] shadow-xl group',
         className
       )}
     >
@@ -76,13 +74,13 @@ const VideoTile: React.FC<VideoTileProps> = ({
           )}
         />
       ) : (
-        /* Discord Avatar fallback when video is off */
+        /* Refined Avatar Fallback */
         <div className="flex flex-col items-center justify-center select-none">
           <div
             className={clsx(
-              'w-16 h-16 sm:w-20 sm:h-20 rounded-full flex items-center justify-center text-white text-xl sm:text-2xl font-bold shadow-lg transition-transform',
-              getAvatarColor(username),
-              !isAudioMuted && 'ring-4 ring-discord-online/50'
+              'w-16 h-16 sm:w-20 sm:h-20 rounded-full border flex items-center justify-center text-xl sm:text-2xl font-semibold shadow-sm transition-all',
+              getAvatarStyle(username),
+              !isAudioMuted && 'ring-2 ring-online/40 ring-offset-2 ring-offset-surface'
             )}
           >
             {username.charAt(0).toUpperCase()}
@@ -92,31 +90,29 @@ const VideoTile: React.FC<VideoTileProps> = ({
 
       {/* Screen Sharing Badge */}
       {(isScreen || isScreenSharing) && (
-        <div className="absolute top-3 left-3 bg-discord-online/90 backdrop-blur-sm text-white text-xs px-2.5 py-1 rounded-md flex items-center space-x-1.5 shadow z-10">
-          <ScreenShare className="w-3.5 h-3.5" />
+        <div className="absolute top-3 left-3 bg-canvas/85 backdrop-blur-md border border-online/30 text-online text-[11px] px-2.5 py-1 rounded-lg flex items-center space-x-1.5 shadow z-10">
+          <ScreenShare className="w-3 h-3" />
           <span className="font-medium">{isLocal ? 'Your Screen' : 'Live Screen'}</span>
         </div>
       )}
 
       {/* Bottom Status Overlay */}
-      <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between pointer-events-none z-10">
-        {/* Username Tag */}
-        <div className="bg-black/60 backdrop-blur-sm px-2.5 py-1 rounded text-xs font-semibold text-white truncate max-w-[80%] flex items-center space-x-1">
+      <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-none z-10">
+        <div className="bg-canvas/75 backdrop-blur-md border border-white/[0.07] px-2.5 py-1 rounded-lg text-[11px] font-medium text-text-primary truncate max-w-[80%] flex items-center space-x-1">
           <span className="truncate">{username}</span>
-          {isLocal && <span className="text-discord-muted text-[10px]">(You)</span>}
+          {isLocal && <span className="text-text-muted text-[10px]">(You)</span>}
         </div>
 
-        {/* Muted / Video Off Icons (only for cameras) */}
         {!isScreen && (
           <div className="flex items-center space-x-1">
             {isVideoOff && (
-              <div className="bg-discord-danger/80 p-1 rounded text-white" title="Camera Off">
-                <VideoOff className="w-3.5 h-3.5" />
+              <div className="bg-danger/90 p-1 rounded-md text-white" title="Camera Off">
+                <VideoOff className="w-3 h-3" />
               </div>
             )}
             {isAudioMuted && (
-              <div className="bg-discord-danger/80 p-1 rounded text-white" title="Muted">
-                <MicOff className="w-3.5 h-3.5" />
+              <div className="bg-danger/90 p-1 rounded-md text-white" title="Muted">
+                <MicOff className="w-3 h-3" />
               </div>
             )}
           </div>
@@ -127,6 +123,7 @@ const VideoTile: React.FC<VideoTileProps> = ({
 };
 
 interface VideoGridProps {
+  channelName?: string;
   localStream: MediaStream | null;
   localScreenStream?: MediaStream | null;
   peers: PeerStream[];
@@ -139,9 +136,11 @@ interface VideoGridProps {
   onToggleVideo: () => void;
   onToggleScreenShare: () => void;
   onLeaveCall: () => void;
+  onBackToChat?: () => void;
 }
 
 export const VideoGrid: React.FC<VideoGridProps> = ({
+  channelName = 'Call',
   localStream,
   localScreenStream,
   peers,
@@ -154,12 +153,11 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
   onToggleVideo,
   onToggleScreenShare,
   onLeaveCall,
+  onBackToChat,
 }) => {
-  // Separate webcam peers and screen share peers
   const webcamPeers = peers.filter((p) => !p.isScreen);
   const screenPeers = peers.filter((p) => p.isScreen);
 
-  // Determine active screen share (local or remote)
   const activeScreen = localScreenStream
     ? {
         stream: localScreenStream,
@@ -186,37 +184,57 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-discord-dark h-full relative overflow-hidden select-none">
-      {/* Error / Warning Alert */}
+    <div className="flex-1 flex flex-col bg-canvas h-full relative overflow-hidden select-none">
+      {/* Minimal Call Stage Header */}
+      <header className="h-14 px-6 border-b border-white/[0.07] flex items-center justify-between bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0">
+        <div className="flex items-center space-x-2.5">
+          <span className="w-2 h-2 rounded-full bg-online animate-pulse" />
+          <span className="text-sm font-semibold text-text-primary">{channelName}</span>
+          <span className="text-xs text-text-muted">
+            {totalParticipants} {totalParticipants === 1 ? 'participant' : 'participants'}
+          </span>
+        </div>
+
+        {onBackToChat && (
+          <button
+            type="button"
+            onClick={onBackToChat}
+            className="px-3 py-1.5 rounded-lg bg-surface hover:bg-card border border-white/[0.08] text-xs font-medium text-text-primary flex items-center space-x-1.5 transition-colors"
+          >
+            <MessageSquare className="w-3.5 h-3.5 text-text-secondary" />
+            <span>Open Chat</span>
+          </button>
+        )}
+      </header>
+
+      {/* Error / Warning Banner */}
       {error && (
-        <div className="bg-discord-warning/20 border-b border-discord-warning/30 text-discord-warning text-xs px-4 py-2 text-center font-medium">
+        <div className="bg-warning-muted border-b border-warning/20 text-warning text-xs px-4 py-2 text-center font-medium">
           {error}
         </div>
       )}
 
-      {/* Main Content: Stage Layout vs Balanced Grid */}
+      {/* Stage or Balanced Grid */}
       <div className="flex-1 p-4 md:p-6 overflow-y-auto flex flex-col items-center justify-center min-h-0">
         {activeScreen ? (
-          /* DISCORD STAGE LAYOUT: Screen in central stage + Webcams in bottom strip */
           <div className="w-full h-full flex flex-col items-center justify-between gap-4 max-w-6xl">
-            {/* Central Stage Screen Share */}
+            {/* Prominent Central Stage Screen Share */}
             <div className="flex-1 w-full flex items-center justify-center min-h-0">
-              <div className="w-full h-full max-h-[66vh] aspect-video">
+              <div className="w-full h-full max-h-[65vh] aspect-video">
                 <VideoTile
                   stream={activeScreen.stream}
                   username={activeScreen.username}
                   isLocal={activeScreen.isLocal}
                   isScreen={true}
                   objectFit="contain"
-                  className="w-full h-full"
+                  className="w-full h-full bg-black"
                 />
               </div>
             </div>
 
             {/* Bottom Participant Webcam Strip */}
             <div className="w-full flex items-center justify-center gap-3 overflow-x-auto py-1 px-2 flex-shrink-0">
-              {/* Local Webcam Tile */}
-              <div className="w-44 sm:w-52 aspect-video flex-shrink-0">
+              <div className="w-40 sm:w-48 aspect-video flex-shrink-0">
                 <VideoTile
                   stream={localStream}
                   username={currentUsername}
@@ -226,9 +244,8 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
                 />
               </div>
 
-              {/* Remote Webcam Tiles */}
               {webcamPeers.map((peer) => (
-                <div key={peer.peerId} className="w-44 sm:w-52 aspect-video flex-shrink-0">
+                <div key={peer.peerId} className="w-40 sm:w-48 aspect-video flex-shrink-0">
                   <VideoTile
                     stream={peer.stream}
                     username={peer.username || peer.peerId}
@@ -240,9 +257,7 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
             </div>
           </div>
         ) : (
-          /* STANDARD BALANCED PARTICIPANT GRID */
           <div className={clsx('grid gap-4 w-full justify-center', getGridClass())}>
-            {/* Local User Tile */}
             <VideoTile
               stream={localStream}
               username={currentUsername}
@@ -251,7 +266,6 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
               isVideoOff={isVideoOff}
             />
 
-            {/* Remote Peer Tiles */}
             {webcamPeers.map((peer) => (
               <VideoTile
                 key={peer.peerId}
@@ -265,7 +279,7 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
         )}
       </div>
 
-      {/* Floating Call Controls Dock */}
+      {/* Compact Floating Control Dock */}
       <div className="pb-6 pt-2 flex justify-center z-20 flex-shrink-0">
         <CallControls
           isAudioMuted={isAudioMuted}
