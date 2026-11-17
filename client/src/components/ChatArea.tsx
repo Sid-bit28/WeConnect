@@ -26,7 +26,9 @@ interface ChatAreaProps {
   isInCall?: boolean;
   isCallViewActive?: boolean;
   memberCount?: number;
+  typingUsers?: string[];
   onSendMessage: (content: string) => void;
+  onTyping?: (isTyping: boolean) => void;
   onReconnect?: () => void;
   onToggleUserList?: () => void;
   onToggleCallView?: () => void;
@@ -35,6 +37,8 @@ interface ChatAreaProps {
 }
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const TYPING_THROTTLE_MS = 1500;
+const TYPING_IDLE_MS = 2500;
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
   channelName,
@@ -49,7 +53,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   isInCall = false,
   isCallViewActive = false,
   memberCount = 1,
+  typingUsers = [],
   onSendMessage,
+  onTyping,
   onReconnect,
   onToggleUserList,
   onToggleCallView,
@@ -58,10 +64,65 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 }) => {
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const lastTypingEmitRef = useRef<number>(0);
+  const typingIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isCurrentlyTypingRef = useRef<boolean>(false);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Clear typing timers on channel switch or unmount
+  useEffect(() => {
+    return () => {
+      if (typingIdleTimeoutRef.current) {
+        clearTimeout(typingIdleTimeoutRef.current);
+        typingIdleTimeoutRef.current = null;
+      }
+      if (isCurrentlyTypingRef.current && onTyping) {
+        isCurrentlyTypingRef.current = false;
+        onTyping(false);
+      }
+    };
+  }, [channelName, onTyping]);
+
+  const stopTypingSignal = () => {
+    if (typingIdleTimeoutRef.current) {
+      clearTimeout(typingIdleTimeoutRef.current);
+      typingIdleTimeoutRef.current = null;
+    }
+    if (isCurrentlyTypingRef.current && onTyping) {
+      isCurrentlyTypingRef.current = false;
+      lastTypingEmitRef.current = 0;
+      onTyping(false);
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setInputText(value);
+
+    if (!onTyping || connectionStatus !== 'connected') return;
+
+    if (!value.trim()) {
+      stopTypingSignal();
+      return;
+    }
+
+    const now = Date.now();
+    if (!isCurrentlyTypingRef.current || now - lastTypingEmitRef.current >= TYPING_THROTTLE_MS) {
+      isCurrentlyTypingRef.current = true;
+      lastTypingEmitRef.current = now;
+      onTyping(true);
+    }
+
+    if (typingIdleTimeoutRef.current) {
+      clearTimeout(typingIdleTimeoutRef.current);
+    }
+    typingIdleTimeoutRef.current = setTimeout(() => {
+      stopTypingSignal();
+    }, TYPING_IDLE_MS);
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -73,8 +134,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const handleSubmit = () => {
     const trimmed = inputText.trim();
     if (!trimmed) return;
+    stopTypingSignal();
     onSendMessage(trimmed);
     setInputText('');
+  };
+
+  const formatTypingText = (users: string[]) => {
+    if (users.length === 0) return '';
+    if (users.length === 1) return `${users[0]} is typing...`;
+    if (users.length === 2) return `${users[0]} and ${users[1]} are typing...`;
+    return `${users[0]}, ${users[1]} and ${users.length - 2} other${users.length - 2 > 1 ? 's' : ''} are typing...`;
   };
 
   const formatTimestamp = (timestamp?: number) => {
@@ -353,13 +422,27 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Floating Rounded Input Bar */}
-      <div className="px-6 pb-5 pt-2 flex-shrink-0">
+      {/* Floating Rounded Input Bar + Typing Indicator */}
+      <div className="px-6 pb-5 pt-1 flex-shrink-0">
+        {/* Subtle Typing Indicator */}
+        <div className="h-5 max-w-4xl px-1 flex items-center">
+          {typingUsers.length > 0 && (
+            <div className="flex items-center space-x-2 text-[11px] text-text-secondary select-none">
+              <span className="flex space-x-0.5">
+                <span className="w-1 h-1 rounded-full bg-accent animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-1 h-1 rounded-full bg-accent animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-1 h-1 rounded-full bg-accent animate-bounce" />
+              </span>
+              <span className="font-medium">{formatTypingText(typingUsers)}</span>
+            </div>
+          )}
+        </div>
+
         <div className="max-w-4xl bg-surface border border-white/[0.08] focus-within:border-accent/60 rounded-xl px-4 py-2 flex items-center space-x-3 transition-colors shadow-sm">
           <input
             type="text"
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             placeholder={
               isDm

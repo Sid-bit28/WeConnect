@@ -5,6 +5,7 @@ import { VideoGrid } from './components/VideoGrid';
 import { UserList } from './components/UserList';
 import { FriendsView } from './components/FriendsView';
 import { AuthScreen } from './components/AuthScreen';
+import { CreateChannelModal } from './components/CreateChannelModal';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
@@ -30,14 +31,58 @@ interface AuthenticatedAppProps {
 function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const activeUsername = user.username;
 
+  const [channels, setChannels] = useState<Channel[]>(DEFAULT_CHANNELS);
   const [activeChannelId, setActiveChannelId] = useState<string>('general');
   const [isFriendsViewActive, setIsFriendsViewActive] = useState<boolean>(false);
   const [showUserList, setShowUserList] = useState<boolean>(true);
   const [isCallViewActive, setIsCallViewActive] = useState<boolean>(false);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [friendsRefreshTrigger, setFriendsRefreshTrigger] = useState<number>(0);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const [isCreateChannelOpen, setIsCreateChannelOpen] = useState<boolean>(false);
+  const [createChannelType, setCreateChannelType] = useState<'text' | 'voice'>('text');
 
   const handleSignalRef = useRef<((msg: Message) => Promise<void>) | null>(null);
+  const activeChannelIdRef = useRef<string>(activeChannelId);
+  const isFriendsViewActiveRef = useRef<boolean>(isFriendsViewActive);
+
+  useEffect(() => {
+    activeChannelIdRef.current = activeChannelId;
+  }, [activeChannelId]);
+
+  useEffect(() => {
+    isFriendsViewActiveRef.current = isFriendsViewActive;
+  }, [isFriendsViewActive]);
+
+  const fetchChannels = useCallback(async () => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/channels`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const list: Channel[] = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.channels)
+          ? data.channels
+          : [];
+        if (list.length > 0) {
+          setChannels(list);
+          // If the active channel was deleted, fall back cleanly to general
+          if (!isDmRoom(activeChannelIdRef.current)) {
+            const stillExists = list.some((c) => c.id === activeChannelIdRef.current);
+            if (!stillExists) {
+              setActiveChannelId('general');
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch channels, using defaults:', err);
+    }
+  }, [token]);
 
   const fetchFriendsList = useCallback(async () => {
     try {
@@ -57,16 +102,28 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   }, [token]);
 
   useEffect(() => {
+    fetchChannels();
     fetchFriendsList();
-  }, [fetchFriendsList]);
+  }, [fetchChannels, fetchFriendsList]);
+
+  const clearUnread = useCallback((roomId: string) => {
+    setUnreadCounts((prev) => {
+      if (!prev[roomId]) return prev;
+      const next = { ...prev };
+      delete next[roomId];
+      return next;
+    });
+  }, []);
 
   const {
     status,
     messages,
     isLoadingHistory,
     users,
+    typingUsers,
     error: socketError,
     send,
+    sendTyping,
     sendSignal,
     connect,
   } = useSocket(activeChannelId, activeUsername, {
@@ -75,7 +132,19 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       if (msg.type === 'friend_update') {
         fetchFriendsList();
         setFriendsRefreshTrigger((prev) => prev + 1);
+      } else if (msg.type === 'channel_update') {
+        fetchChannels();
+      } else if (msg.type === 'unread' && msg.room) {
+        const isViewingRoom =
+          !isFriendsViewActiveRef.current && msg.room === activeChannelIdRef.current;
+        if (!isViewingRoom) {
+          setUnreadCounts((prev) => ({
+            ...prev,
+            [msg.room]: (prev[msg.room] || 0) + 1,
+          }));
+        }
       }
+
       if (handleSignalRef.current) {
         handleSignalRef.current(msg);
       }
@@ -101,7 +170,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     ? friends.find((f) => f.username.toLowerCase() === dmPeerRaw.toLowerCase())
     : undefined;
   const activeChannel =
-    DEFAULT_CHANNELS.find((c) => c.id === activeChannelId) || DEFAULT_CHANNELS[0];
+    channels.find((c) => c.id === activeChannelId) || channels[0] || DEFAULT_CHANNELS[0];
 
   const activeDisplayName = activeIsDm
     ? matchedFriend?.username || dmPeerRaw || 'Direct Message'
@@ -122,12 +191,72 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   };
 
   const handleChannelSelect = (channelId: string) => {
-    const targetChannel = DEFAULT_CHANNELS.find((c) => c.id === channelId);
+    const targetChannel = channels.find((c) => c.id === channelId);
     setActiveChannelId(channelId);
     setIsFriendsViewActive(false);
+    clearUnread(channelId);
 
     if (targetChannel?.type === 'voice' && !webrtc.isInCall) {
       webrtc.joinCall();
+    }
+  };
+
+  const handleCreateChannel = async (payload: {
+    name: string;
+    type: 'text' | 'voice';
+    topic: string;
+  }): Promise<string | null> => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/channels`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return data.error || data.message || 'Failed to create channel.';
+      }
+      await fetchChannels();
+      const createdId = data.channel?.id || data.id;
+      if (createdId) {
+        setActiveChannelId(createdId);
+        setIsFriendsViewActive(false);
+        clearUnread(createdId);
+      }
+      return null;
+    } catch (err: any) {
+      return err?.message || 'Network error while creating channel.';
+    }
+  };
+
+  const handleDeleteChannel = async (channelId: string) => {
+    if (channelId === 'general') return;
+    const ch = channels.find((c) => c.id === channelId);
+    const label = ch ? ch.name : channelId;
+    if (!confirm(`Delete channel "${label}"?`)) return;
+
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/api/channels?id=${encodeURIComponent(channelId)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+      if (res.ok) {
+        if (activeChannelId === channelId) {
+          setActiveChannelId('general');
+          clearUnread('general');
+        }
+        await fetchChannels();
+      }
+    } catch (err) {
+      console.warn('Failed to delete channel:', err);
     }
   };
 
@@ -148,10 +277,16 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     <div className="flex h-screen w-screen bg-canvas text-text-primary overflow-hidden font-sans">
       {/* Left Navigation Sidebar */}
       <ChannelSidebar
-        channels={DEFAULT_CHANNELS}
+        channels={channels}
         friends={friends}
+        unreadCounts={unreadCounts}
         activeChannel={activeChannelId}
         onSelectChannel={handleChannelSelect}
+        onOpenCreateChannel={(type) => {
+          setCreateChannelType(type);
+          setIsCreateChannelOpen(true);
+        }}
+        onDeleteChannel={handleDeleteChannel}
         username={activeUsername}
         connectionStatus={status}
         isInCall={webrtc.isInCall}
@@ -194,6 +329,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             onOpenChat={(roomId) => {
               setActiveChannelId(roomId);
               setIsFriendsViewActive(false);
+              clearUnread(roomId);
             }}
           />
         ) : isCallViewActive ? (
@@ -227,7 +363,9 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             isInCall={webrtc.isInCall}
             isCallViewActive={isCallViewActive}
             memberCount={onlineUsers.length}
+            typingUsers={typingUsers}
             onSendMessage={handleSendMessage}
+            onTyping={sendTyping}
             onReconnect={connect}
             onToggleUserList={() => setShowUserList((prev) => !prev)}
             onToggleCallView={() => setIsCallViewActive((prev) => !prev)}
@@ -241,6 +379,14 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       {!isFriendsViewActive && !isCallViewActive && showUserList && (
         <UserList users={onlineUsers} currentUsername={activeUsername} />
       )}
+
+      {/* Create Channel Modal */}
+      <CreateChannelModal
+        isOpen={isCreateChannelOpen}
+        defaultType={createChannelType}
+        onClose={() => setIsCreateChannelOpen(false)}
+        onCreate={handleCreateChannel}
+      />
     </div>
   );
 }

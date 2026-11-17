@@ -32,12 +32,55 @@ type Friendship struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+var (
+	ErrChannelExists   = errors.New("Channel already exists")
+	ErrChannelNotFound = errors.New("Channel not found")
+)
+
+// Channel represents a text or voice channel in the workspace.
+type Channel struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"` // "text" | "voice"
+	Topic     string    `json:"topic,omitempty"`
+	CreatedBy string    `json:"createdBy,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+func defaultChannels() []Channel {
+	now := time.Now().UTC()
+	return []Channel{
+		{ID: "general", Name: "general", Type: "text", Topic: "General workspace discussion", CreatedBy: "system", CreatedAt: now},
+		{ID: "random", Name: "random", Type: "text", Topic: "Casual talk and off-topic", CreatedBy: "system", CreatedAt: now.Add(time.Millisecond)},
+		{ID: "dev-chat", Name: "dev-chat", Type: "text", Topic: "Engineering, architecture, and releases", CreatedBy: "system", CreatedAt: now.Add(2 * time.Millisecond)},
+		{ID: "voice-lounge", Name: "Voice Lounge", Type: "voice", Topic: "Drop-in voice and video room", CreatedBy: "system", CreatedAt: now.Add(3 * time.Millisecond)},
+		{ID: "gaming", Name: "Gaming Room", Type: "voice", Topic: "Low-latency voice room", CreatedBy: "system", CreatedAt: now.Add(4 * time.Millisecond)},
+	}
+}
+
+func slugifyChannelID(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range lower {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
 // StoreData represents the persisted JSON structure for FileStore.
 type StoreData struct {
 	Users       map[string]*User       `json:"users"`              // normalized username -> User
 	Friendships map[string]*Friendship `json:"friendships"`        // canonical key -> Friendship
 	Tokens      map[string]string      `json:"tokens"`             // token -> normalized username
 	Messages    []Message              `json:"messages,omitempty"` // chat message history
+	Channels    []Channel              `json:"channels,omitempty"` // custom & default channels
 }
 
 // Store is the common interface implemented by FileStore and PostgresStore.
@@ -53,6 +96,9 @@ type Store interface {
 	GetFriends(username string, isOnline func(string) bool) FriendsData
 	SaveMessage(msg Message) error
 	GetMessages(room string, limit int) ([]Message, error)
+	GetChannels() ([]Channel, error)
+	CreateChannel(ch Channel) error
+	DeleteChannel(id string) error
 	Close() error
 }
 
@@ -103,6 +149,13 @@ func NewFileStore(filePath string) (*FileStore, error) {
 		}
 		if s.data.Messages == nil {
 			s.data.Messages = make([]Message, 0)
+		}
+	}
+
+	if len(s.data.Channels) == 0 {
+		s.data.Channels = defaultChannels()
+		if filePath != "" {
+			_ = s.saveLocked()
 		}
 	}
 
@@ -463,6 +516,52 @@ func (s *FileStore) GetMessages(room string, limit int) ([]Message, error) {
 		}
 	}
 	return res, nil
+}
+
+// GetChannels returns all configured channels.
+func (s *FileStore) GetChannels() ([]Channel, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	res := make([]Channel, len(s.data.Channels))
+	copy(res, s.data.Channels)
+	return res, nil
+}
+
+// CreateChannel adds a new channel if its ID does not already exist.
+func (s *FileStore) CreateChannel(ch Channel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.data.Channels {
+		if existing.ID == ch.ID {
+			return ErrChannelExists
+		}
+	}
+	if ch.CreatedAt.IsZero() {
+		ch.CreatedAt = time.Now().UTC()
+	}
+	s.data.Channels = append(s.data.Channels, ch)
+	return s.saveLocked()
+}
+
+// DeleteChannel deletes a channel by ID. Deleting "general" is rejected.
+func (s *FileStore) DeleteChannel(id string) error {
+	if id == "general" {
+		return errors.New("Cannot delete the default #general channel")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := -1
+	for i, ch := range s.data.Channels {
+		if ch.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return ErrChannelNotFound
+	}
+	s.data.Channels = append(s.data.Channels[:idx], s.data.Channels[idx+1:]...)
+	return s.saveLocked()
 }
 
 // Close is a no-op for FileStore.

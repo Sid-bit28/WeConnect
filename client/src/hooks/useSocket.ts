@@ -31,11 +31,13 @@ export function useSocket(
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [users, setUsers] = useState<string[]>([]);
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const isUnmountedRef = useRef<boolean>(false);
   const onMessageRef = useRef<((msg: Message) => void) | undefined>(onMessage);
 
@@ -43,11 +45,27 @@ export function useSocket(
     onMessageRef.current = onMessage;
   }, [onMessage]);
 
+  const clearAllTypingTimers = useCallback(() => {
+    typingTimersRef.current.forEach((timer) => clearTimeout(timer));
+    typingTimersRef.current.clear();
+    setTypingUsers([]);
+  }, []);
+
+  const clearTypingUser = useCallback((sender: string) => {
+    const existingTimer = typingTimersRef.current.get(sender);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      typingTimersRef.current.delete(sender);
+    }
+    setTypingUsers((prev) => (prev.includes(sender) ? prev.filter((u) => u !== sender) : prev));
+  }, []);
+
   // Clear state and fetch persisted chat history whenever room changes
   useEffect(() => {
     setMessages([]);
     setUsers([]);
     setError(null);
+    clearAllTypingTimers();
 
     if (!room.trim() || !token) {
       setIsLoadingHistory(false);
@@ -128,10 +146,10 @@ export function useSocket(
       isCancelled = true;
       controller.abort();
     };
-  }, [room, token]);
+  }, [room, token, clearAllTypingTimers]);
 
   const connect = useCallback(() => {
-    if (!username.trim() || !room.trim()) {
+    if (!username.trim() || !room.trim() || !token) {
       setStatus('disconnected');
       return;
     }
@@ -149,11 +167,8 @@ export function useSocket(
     try {
       const params = new URLSearchParams({
         room,
-        user: username,
+        token,
       });
-      if (token) {
-        params.set('token', token);
-      }
 
       const urlWithParams = `${serverUrl}?${params.toString()}`;
       const ws = new WebSocket(urlWithParams);
@@ -177,6 +192,9 @@ export function useSocket(
 
           switch (msg.type) {
             case 'chat':
+              if (msg.sender) {
+                clearTypingUser(msg.sender);
+              }
               setMessages((prev) => {
                 const key = getMessageKey(msg);
                 if (prev.some((m) => getMessageKey(m) === key)) {
@@ -185,6 +203,27 @@ export function useSocket(
                 return [...prev, msg];
               });
               break;
+
+            case 'typing': {
+              const sender = msg.sender;
+              if (!sender || sender.toLowerCase() === username.toLowerCase()) {
+                break;
+              }
+              const isTyping = msg.data?.isTyping !== false;
+              if (isTyping) {
+                setTypingUsers((prev) => (prev.includes(sender) ? prev : [...prev, sender]));
+                const existingTimer = typingTimersRef.current.get(sender);
+                if (existingTimer) clearTimeout(existingTimer);
+                const timer = setTimeout(() => {
+                  typingTimersRef.current.delete(sender);
+                  setTypingUsers((prev) => prev.filter((u) => u !== sender));
+                }, 4000);
+                typingTimersRef.current.set(sender, timer);
+              } else {
+                clearTypingUser(sender);
+              }
+              break;
+            }
 
             case 'users':
               if (Array.isArray(msg.data)) {
@@ -209,6 +248,9 @@ export function useSocket(
               break;
 
             case 'leave':
+              if (msg.sender) {
+                clearTypingUser(msg.sender);
+              }
               setMessages((prev) => [
                 ...prev,
                 {
@@ -229,6 +271,8 @@ export function useSocket(
             case 'call-join':
             case 'call-leave':
             case 'friend_update':
+            case 'unread':
+            case 'channel_update':
               // Handled via onMessage callback
               break;
 
@@ -271,7 +315,7 @@ export function useSocket(
         setError(err?.message || 'Failed to initialize WebSocket');
       }
     }
-  }, [room, username, token, serverUrl, reconnectInterval, maxReconnectAttempts]);
+  }, [room, username, token, serverUrl, reconnectInterval, maxReconnectAttempts, clearTypingUser]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -283,8 +327,9 @@ export function useSocket(
       wsRef.current.close(1000, 'User initiated disconnect');
       wsRef.current = null;
     }
+    clearAllTypingTimers();
     setStatus('disconnected');
-  }, [maxReconnectAttempts]);
+  }, [maxReconnectAttempts, clearAllTypingTimers]);
 
   const send = useCallback(
     (type: MessageType, content?: string, data?: any): boolean => {
@@ -315,6 +360,25 @@ export function useSocket(
     [room, username]
   );
 
+  const sendTyping = useCallback(
+    (isTyping: boolean) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      const message: Message = {
+        type: 'typing',
+        room,
+        sender: username,
+        data: { isTyping },
+        timestamp: Date.now(),
+      };
+      try {
+        wsRef.current.send(JSON.stringify(message));
+      } catch {
+        // Ignore transient typing frame failures
+      }
+    },
+    [room, username]
+  );
+
   const sendSignal = useCallback(
     (target: string, signalType: string, payload?: any): boolean => {
       return send('signal', undefined, { target, signalType, payload });
@@ -331,6 +395,7 @@ export function useSocket(
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
+      clearAllTypingTimers();
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.onerror = null;
@@ -338,15 +403,17 @@ export function useSocket(
         wsRef.current = null;
       }
     };
-  }, [connect]);
+  }, [connect, clearAllTypingTimers]);
 
   return {
     status,
     messages,
     isLoadingHistory,
     users,
+    typingUsers,
     error,
     send,
+    sendTyping,
     sendSignal,
     connect,
     disconnect,

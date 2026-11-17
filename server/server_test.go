@@ -42,24 +42,44 @@ func TestMissingQueryParams(t *testing.T) {
 	store, _ := NewStore("")
 	handler := setupRoutes(hub, store, "")
 
-	// Missing both
+	// Missing token -> 401 Unauthorized
 	req := httptest.NewRequest("GET", "/ws", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing params, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing token, got %d", w.Code)
 	}
 
-	// Missing user
-	req = httptest.NewRequest("GET", "/ws?room=general", nil)
+	// Arbitrary ?user= without token -> 401 Unauthorized
+	req = httptest.NewRequest("GET", "/ws?room=general&user=spoofed", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated ?user= param, got %d", w.Code)
+	}
+
+	// Invalid token -> 401 Unauthorized
+	req = httptest.NewRequest("GET", "/ws?room=general&token=invalid-token", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for invalid token, got %d", w.Code)
+	}
+
+	// Valid token + missing room -> 400 Bad Request
+	_, token, err := store.Register("alice", "password123")
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	req = httptest.NewRequest("GET", "/ws?token="+token, nil)
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing user, got %d", w.Code)
+		t.Fatalf("expected 400 for missing room with valid token, got %d", w.Code)
 	}
 }
 
-func connectWS(t *testing.T, serverURL, room, user string) *websocket.Conn {
+func connectWS(t *testing.T, serverURL, room, token string) *websocket.Conn {
 	t.Helper()
 	u, err := url.Parse(serverURL)
 	if err != nil {
@@ -69,7 +89,7 @@ func connectWS(t *testing.T, serverURL, room, user string) *websocket.Conn {
 	u.Path = "/ws"
 	q := u.Query()
 	q.Set("room", room)
-	q.Set("user", user)
+	q.Set("token", token)
 	u.RawQuery = q.Encode()
 
 	ws, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -99,12 +119,21 @@ func readNextMessage(t *testing.T, ws *websocket.Conn, timeout time.Duration) Me
 func TestWebSocketWorkflow(t *testing.T) {
 	hub := NewHub()
 	store, _ := NewStore("")
-	hub.store = store
+	hub.SetStore(store)
 	server := httptest.NewServer(setupRoutes(hub, store, ""))
 	defer server.Close()
 
+	_, aliceToken, err := store.Register("alice", "password123")
+	if err != nil {
+		t.Fatalf("register alice failed: %v", err)
+	}
+	_, bobToken, err := store.Register("bob", "password123")
+	if err != nil {
+		t.Fatalf("register bob failed: %v", err)
+	}
+
 	// 1. Alice connects to "general"
-	aliceConn := connectWS(t, server.URL, "general", "alice")
+	aliceConn := connectWS(t, server.URL, "general", aliceToken)
 	defer aliceConn.Close()
 
 	// Alice should receive join message and users message
@@ -119,7 +148,7 @@ func TestWebSocketWorkflow(t *testing.T) {
 	}
 
 	// 2. Bob connects to "general"
-	bobConn := connectWS(t, server.URL, "general", "bob")
+	bobConn := connectWS(t, server.URL, "general", bobToken)
 	defer bobConn.Close()
 
 	// Alice receives bob join
@@ -358,7 +387,7 @@ func TestFriendsWorkflow(t *testing.T) {
 	bobToken := bRes["token"].(string)
 
 	// Connect Bob to WebSocket so we can test online status and friend_update notification
-	bobWS := connectWS(t, server.URL, "general", "bob")
+	bobWS := connectWS(t, server.URL, "general", bobToken)
 	defer bobWS.Close()
 	_ = readNextMessage(t, bobWS, 1*time.Second) // join
 	_ = readNextMessage(t, bobWS, 1*time.Second) // users
@@ -660,10 +689,10 @@ func TestDMAccessControl(t *testing.T) {
 		t.Fatalf("expected 403 for charlie WS in %s, got err=%v resp=%v", dmRoom, err, resp)
 	}
 
-	// 4. Charlie connects to dm:alice:bob with user param -> 403 Forbidden
-	_, resp, err = dialWSRaw(server.URL, dmRoom, "charlie", "")
-	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 for charlie user param WS in %s, got err=%v resp=%v", dmRoom, err, resp)
+	// 4. Unauthenticated connection attempt (even with user=alice) -> 401 Unauthorized
+	_, resp, err = dialWSRaw(server.URL, dmRoom, "alice", "")
+	if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated WS in %s, got err=%v resp=%v", dmRoom, err, resp)
 	}
 
 	// 5. Alice & Bob can fetch DM history via GET /api/messages
@@ -685,5 +714,230 @@ func TestDMAccessControl(t *testing.T) {
 	w := doJSONRequest(handler, "GET", "/api/messages?room="+dmRoom, nil, charlieToken)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for charlie on DM history, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestCustomChannels(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+
+	// 1. Unauthenticated GET /api/channels -> 401
+	w := doJSONRequest(handler, "GET", "/api/channels", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /api/channels, got %d", w.Code)
+	}
+
+	// Register alice
+	_, aliceToken, err := store.Register("alice", "password123")
+	if err != nil {
+		t.Fatalf("register alice failed: %v", err)
+	}
+
+	// 2. GET /api/channels -> auto-seeded 5 defaults
+	w = doJSONRequest(handler, "GET", "/api/channels", nil, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for GET /api/channels, got %d", w.Code)
+	}
+	var listRes struct {
+		Channels []Channel `json:"channels"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listRes); err != nil {
+		t.Fatalf("decode channels failed: %v", err)
+	}
+	if len(listRes.Channels) != 5 {
+		t.Fatalf("expected 5 default seeded channels, got %d", len(listRes.Channels))
+	}
+
+	// Connect alice to WS to verify live channel_update broadcasts
+	aliceWS := connectWS(t, server.URL, "general", aliceToken)
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	// 3. Invalid name/type validation -> 400
+	w = doJSONRequest(handler, "POST", "/api/channels", map[string]string{
+		"name": "a",
+		"type": "text",
+	}, aliceToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for short channel name, got %d", w.Code)
+	}
+	w = doJSONRequest(handler, "POST", "/api/channels", map[string]string{
+		"name": "design",
+		"type": "invalid",
+	}, aliceToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid channel type, got %d", w.Code)
+	}
+
+	// 4. Create valid custom channel -> 201 + channel_update broadcast
+	w = doJSONRequest(handler, "POST", "/api/channels", map[string]string{
+		"name":  "Design Sync",
+		"type":  "text",
+		"topic": "Weekly design reviews",
+	}, aliceToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for create channel, got %d (%s)", w.Code, w.Body.String())
+	}
+	var createRes struct {
+		Channel Channel `json:"channel"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &createRes)
+	if createRes.Channel.ID != "design-sync" || createRes.Channel.CreatedBy != "alice" {
+		t.Fatalf("unexpected created channel: %+v", createRes.Channel)
+	}
+
+	updateMsg := readNextMessage(t, aliceWS, 2*time.Second)
+	if updateMsg.Type != "channel_update" {
+		t.Fatalf("expected channel_update WS broadcast on create, got %+v", updateMsg)
+	}
+
+	// 5. Duplicate channel -> 409 Conflict
+	w = doJSONRequest(handler, "POST", "/api/channels", map[string]string{
+		"name": "Design Sync",
+		"type": "text",
+	}, aliceToken)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate channel, got %d", w.Code)
+	}
+
+	// 6. Delete protected #general -> 400 Bad Request
+	w = doJSONRequest(handler, "DELETE", "/api/channels?id=general", nil, aliceToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for deleting general, got %d", w.Code)
+	}
+
+	// 7. Delete non-existent channel -> 404 Not Found
+	w = doJSONRequest(handler, "DELETE", "/api/channels?id=does-not-exist", nil, aliceToken)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for deleting unknown channel, got %d", w.Code)
+	}
+
+	// 8. Delete custom channel -> 200 OK + channel_update broadcast
+	w = doJSONRequest(handler, "DELETE", "/api/channels?id=design-sync", nil, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for deleting custom channel, got %d (%s)", w.Code, w.Body.String())
+	}
+	delUpdateMsg := readNextMessage(t, aliceWS, 2*time.Second)
+	if delUpdateMsg.Type != "channel_update" {
+		t.Fatalf("expected channel_update WS broadcast on delete, got %+v", delUpdateMsg)
+	}
+
+	// Verify channel count returned to 5
+	w = doJSONRequest(handler, "GET", "/api/channels", nil, aliceToken)
+	_ = json.Unmarshal(w.Body.Bytes(), &listRes)
+	if len(listRes.Channels) != 5 {
+		t.Fatalf("expected 5 channels after delete, got %d", len(listRes.Channels))
+	}
+}
+
+func TestTypingAndUnreadNotifications(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+
+	_, aliceToken, _ := store.Register("alice", "password123")
+	_, bobToken, _ := store.Register("bob", "password123")
+	_, charlieToken, _ := store.Register("charlie", "password123")
+
+	// 1. Alice and Bob both connect to "general"
+	aliceWS := connectWS(t, server.URL, "general", aliceToken)
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	bobGeneralWS := connectWS(t, server.URL, "general", bobToken)
+	_ = readNextMessage(t, bobGeneralWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobGeneralWS, 2*time.Second) // users
+	_ = readNextMessage(t, aliceWS, 2*time.Second)      // bob join
+	_ = readNextMessage(t, aliceWS, 2*time.Second)      // users
+
+	// Alice sends typing event
+	if err := aliceWS.WriteJSON(Message{
+		Type: "typing",
+		Data: map[string]any{"isTyping": true},
+	}); err != nil {
+		t.Fatalf("write typing failed: %v", err)
+	}
+
+	// Bob receives typing event
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // echo
+	bobTyping := readNextMessage(t, bobGeneralWS, 2*time.Second)
+	if bobTyping.Type != "typing" || bobTyping.Sender != "alice" {
+		t.Fatalf("bob expected typing from alice, got %+v", bobTyping)
+	}
+
+	// Verify typing event was NOT persisted to message history
+	w := doJSONRequest(handler, "GET", "/api/messages?room=general", nil, aliceToken)
+	var hist struct {
+		Messages []Message `json:"messages"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &hist)
+	if len(hist.Messages) != 0 {
+		t.Fatalf("typing indicator must not be persisted, got %d messages", len(hist.Messages))
+	}
+
+	// 2. Bob switches to "random" room; Charlie also in "random"
+	bobGeneralWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // bob leave
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	bobRandomWS := connectWS(t, server.URL, "random", bobToken)
+	defer bobRandomWS.Close()
+	_ = readNextMessage(t, bobRandomWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobRandomWS, 2*time.Second) // users
+
+	charlieRandomWS := connectWS(t, server.URL, "random", charlieToken)
+	defer charlieRandomWS.Close()
+	_ = readNextMessage(t, charlieRandomWS, 2*time.Second) // join
+	_ = readNextMessage(t, charlieRandomWS, 2*time.Second) // users
+	_ = readNextMessage(t, bobRandomWS, 2*time.Second)     // charlie join
+	_ = readNextMessage(t, bobRandomWS, 2*time.Second)     // users
+
+	// Alice sends public chat in "general" -> Bob and Charlie (in "random") get unread notification
+	if err := aliceWS.WriteJSON(Message{Type: "chat", Content: "Public ping"}); err != nil {
+		t.Fatalf("write chat failed: %v", err)
+	}
+	_ = readNextMessage(t, aliceWS, 2*time.Second)
+
+	bobUnread := readNextMessage(t, bobRandomWS, 2*time.Second)
+	if bobUnread.Type != "unread" || bobUnread.Room != "general" || bobUnread.Sender != "alice" {
+		t.Fatalf("bob expected unread for general, got %+v", bobUnread)
+	}
+	charlieUnread := readNextMessage(t, charlieRandomWS, 2*time.Second)
+	if charlieUnread.Type != "unread" || charlieUnread.Room != "general" || charlieUnread.Sender != "alice" {
+		t.Fatalf("charlie expected unread for general, got %+v", charlieUnread)
+	}
+
+	// 3. Alice sends DM in "dm:alice:bob" while Bob & Charlie are in "random"
+	// Only Bob should receive unread for dm:alice:bob; Charlie must NOT receive it
+	aliceDMWS := connectWS(t, server.URL, "dm:alice:bob", aliceToken)
+	defer aliceDMWS.Close()
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second) // users
+
+	if err := aliceDMWS.WriteJSON(Message{Type: "chat", Content: "Private DM ping"}); err != nil {
+		t.Fatalf("write dm failed: %v", err)
+	}
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second)
+
+	bobDMUnread := readNextMessage(t, bobRandomWS, 2*time.Second)
+	if bobDMUnread.Type != "unread" || bobDMUnread.Room != "dm:alice:bob" || bobDMUnread.Sender != "alice" {
+		t.Fatalf("bob expected unread for dm:alice:bob, got %+v", bobDMUnread)
+	}
+
+	// Verify Charlie does NOT receive DM unread
+	_ = charlieRandomWS.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if _, raw, err := charlieRandomWS.ReadMessage(); err == nil {
+		t.Fatalf("charlie should NOT receive unread for dm:alice:bob, got %s", string(raw))
 	}
 }

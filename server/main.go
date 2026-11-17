@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
@@ -88,33 +89,29 @@ func healthHandler(hub *Hub) http.HandlerFunc {
 	}
 }
 
-// wsHandler upgrades HTTP to WebSocket and registers the client into the requested room.
+// wsHandler upgrades HTTP to WebSocket after strictly authenticating the session token
+// and enforcing room authorization.
 func wsHandler(hub *Hub, store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		room := strings.TrimSpace(r.URL.Query().Get("room"))
-		user := strings.TrimSpace(r.URL.Query().Get("user"))
 		token := strings.TrimSpace(r.URL.Query().Get("token"))
+		if token == "" || store == nil {
+			http.Error(w, "Unauthorized: valid session token is required", http.StatusUnauthorized)
+			return
+		}
 
+		authUser, err := store.AuthenticateToken(token)
+		if err != nil {
+			http.Error(w, "Unauthorized: invalid or expired session token", http.StatusUnauthorized)
+			return
+		}
+
+		room := strings.TrimSpace(r.URL.Query().Get("room"))
 		if room == "" {
 			http.Error(w, "Query parameter 'room' is required", http.StatusBadRequest)
 			return
 		}
 
-		if token != "" && store != nil {
-			authUser, err := store.AuthenticateToken(token)
-			if err != nil {
-				http.Error(w, "Invalid or expired authentication token", http.StatusUnauthorized)
-				return
-			}
-			user = authUser.Username
-		}
-
-		if user == "" {
-			http.Error(w, "Query parameters 'room' and 'user' are required", http.StatusBadRequest)
-			return
-		}
-
-		if !isAuthorizedForRoom(room, user) {
+		if !isAuthorizedForRoom(room, authUser.Username) {
 			http.Error(w, "Forbidden: not authorized to access this room", http.StatusForbidden)
 			return
 		}
@@ -125,7 +122,7 @@ func wsHandler(hub *Hub, store Store) http.HandlerFunc {
 			return
 		}
 
-		client := NewClient(hub, conn, room, user)
+		client := NewClient(hub, conn, room, authUser.Username)
 		hub.Register(client)
 
 		go client.writePump()
@@ -454,6 +451,126 @@ func iceConfigHandler() http.HandlerFunc {
 	}
 }
 
+// --- Custom Channels Handler ---
+
+type CreateChannelRequest struct {
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	Topic string `json:"topic"`
+}
+
+func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		switch r.Method {
+		case http.MethodGet:
+			channels, err := store.GetChannels()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "Failed to retrieve channels")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"channels": channels,
+			})
+
+		case http.MethodPost:
+			var req CreateChannelRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "Invalid JSON request body")
+				return
+			}
+
+			name := strings.TrimSpace(req.Name)
+			if len(name) < 2 || len(name) > 32 {
+				writeError(w, http.StatusBadRequest, "Channel name must be between 2 and 32 characters")
+				return
+			}
+
+			chType := strings.ToLower(strings.TrimSpace(req.Type))
+			if chType != "text" && chType != "voice" {
+				writeError(w, http.StatusBadRequest, "Channel type must be 'text' or 'voice'")
+				return
+			}
+
+			id := slugifyChannelID(name)
+			if len(id) < 2 {
+				writeError(w, http.StatusBadRequest, "Channel name must contain at least 2 alphanumeric characters")
+				return
+			}
+
+			topic := strings.TrimSpace(req.Topic)
+			if len(topic) > 200 {
+				topic = topic[:200]
+			}
+
+			ch := Channel{
+				ID:        id,
+				Name:      name,
+				Type:      chType,
+				Topic:     topic,
+				CreatedBy: user.Username,
+				CreatedAt: time.Now().UTC(),
+			}
+
+			if err := store.CreateChannel(ch); err != nil {
+				if errors.Is(err, ErrChannelExists) {
+					writeError(w, http.StatusConflict, "A channel with that name already exists")
+				} else {
+					writeError(w, http.StatusInternalServerError, "Failed to create channel")
+				}
+				return
+			}
+
+			hub.BroadcastAll(Message{
+				Type:      "channel_update",
+				Sender:    user.Username,
+				Content:   "Channel created",
+				Data:      ch,
+				Timestamp: time.Now().UnixMilli(),
+			})
+
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"channel": ch,
+			})
+
+		case http.MethodDelete:
+			id := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("id")))
+			if id == "" {
+				writeError(w, http.StatusBadRequest, "Channel id query parameter is required")
+				return
+			}
+			if id == "general" {
+				writeError(w, http.StatusBadRequest, "Cannot delete the default #general channel")
+				return
+			}
+
+			if err := store.DeleteChannel(id); err != nil {
+				if errors.Is(err, ErrChannelNotFound) {
+					writeError(w, http.StatusNotFound, "Channel not found")
+				} else {
+					writeError(w, http.StatusBadRequest, err.Error())
+				}
+				return
+			}
+
+			hub.BroadcastAll(Message{
+				Type:      "channel_update",
+				Sender:    user.Username,
+				Content:   "Channel deleted",
+				Data:      map[string]string{"id": id},
+				Timestamp: time.Now().UnixMilli(),
+			})
+
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "ok",
+				"id":     id,
+			})
+
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	})
+}
+
 // --- Chat Messages History Handler ---
 
 func messagesHandler(store Store) http.HandlerFunc {
@@ -559,7 +676,8 @@ func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
 	mux.HandleFunc("/api/friends/reject", friendRejectHandler(store, hub))
 	mux.HandleFunc("/api/friends/remove", friendRemoveHandler(store, hub))
 
-	// Messages endpoint
+	// Channels & Messages endpoints
+	mux.HandleFunc("/api/channels", channelsHandler(store, hub))
 	mux.HandleFunc("/api/messages", messagesHandler(store))
 
 	// Single-Port SPA serving

@@ -303,6 +303,124 @@ func (h *Hub) NotifyUser(username string, msg Message) bool {
 	return sent
 }
 
+// BroadcastAll sends a protocol message to every connected client across all active rooms.
+func (h *Hub) BroadcastAll(msg Message) {
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().UnixMilli()
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[Hub] Failed to marshal BroadcastAll message: %v", err)
+		return
+	}
+
+	h.mu.RLock()
+	var clients []*Client
+	for _, room := range h.rooms {
+		for c := range room.Clients {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, c := range clients {
+		c.Send(data)
+	}
+}
+
+// NotifyUserIfNotInRoom sends a message to all connections of username that are not currently in roomName.
+func (h *Hub) NotifyUserIfNotInRoom(username, roomName string, msg Message) bool {
+	if username == "" {
+		return false
+	}
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().UnixMilli()
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[Hub] Failed to marshal unread notification: %v", err)
+		return false
+	}
+
+	norm := strings.ToLower(strings.TrimSpace(username))
+	h.mu.RLock()
+	var targets []*Client
+	for rName, room := range h.rooms {
+		if rName == roomName {
+			continue
+		}
+		for c := range room.Clients {
+			if strings.ToLower(c.username) == norm {
+				targets = append(targets, c)
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	sent := false
+	for _, c := range targets {
+		if c.Send(data) {
+			sent = true
+		}
+	}
+	return sent
+}
+
+// NotifyOtherRooms sends a message to all clients currently viewing rooms other than roomName,
+// excluding connections belonging to excludeSender.
+func (h *Hub) NotifyOtherRooms(roomName, excludeSender string, msg Message) {
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().UnixMilli()
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[Hub] Failed to marshal other-rooms notification: %v", err)
+		return
+	}
+
+	normExclude := strings.ToLower(strings.TrimSpace(excludeSender))
+	h.mu.RLock()
+	var targets []*Client
+	for rName, room := range h.rooms {
+		if rName == roomName {
+			continue
+		}
+		for c := range room.Clients {
+			if normExclude != "" && strings.ToLower(c.username) == normExclude {
+				continue
+			}
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, c := range targets {
+		c.Send(data)
+	}
+}
+
+// getDmOtherPeer extracts the other participant's username from a "dm:<u1>:<u2>" room ID.
+func getDmOtherPeer(room, username string) string {
+	if !strings.HasPrefix(room, "dm:") {
+		return ""
+	}
+	parts := strings.Split(room, ":")
+	if len(parts) != 3 {
+		return ""
+	}
+	norm := strings.ToLower(strings.TrimSpace(username))
+	if strings.ToLower(parts[1]) == norm {
+		return parts[2]
+	}
+	if strings.ToLower(parts[2]) == norm {
+		return parts[1]
+	}
+	return ""
+}
+
 // RoomCount returns the total number of active rooms.
 func (h *Hub) RoomCount() int {
 	h.mu.RLock()

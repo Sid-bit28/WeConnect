@@ -1,5 +1,5 @@
 import React from 'react';
-import { Hash, Volume2, Users, LogOut, PhoneOff } from 'lucide-react';
+import { Hash, Volume2, Users, LogOut, PhoneOff, Plus, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Channel, Friend } from '../types';
 import { getDmRoomId } from '../utils/dm';
@@ -7,8 +7,11 @@ import { getDmRoomId } from '../utils/dm';
 interface ChannelSidebarProps {
   channels: Channel[];
   friends?: Friend[];
+  unreadCounts?: Record<string, number>;
   activeChannel: string;
   onSelectChannel: (channelId: string) => void;
+  onOpenCreateChannel?: (defaultType: 'text' | 'voice') => void;
+  onDeleteChannel?: (channelId: string) => void;
   username: string;
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
   isInCall?: boolean;
@@ -22,8 +25,11 @@ interface ChannelSidebarProps {
 export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
   channels,
   friends = [],
+  unreadCounts = {},
   activeChannel,
   onSelectChannel,
+  onOpenCreateChannel,
+  onDeleteChannel,
   username,
   connectionStatus,
   isInCall = false,
@@ -35,6 +41,11 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
 }) => {
   const textChannels = channels.filter((c) => c.type !== 'voice');
   const voiceChannels = channels.filter((c) => c.type === 'voice');
+
+  const formatUnread = (count?: number) => {
+    if (!count || count <= 0) return null;
+    return count > 99 ? '99+' : String(count);
+  };
 
   return (
     <aside className="w-60 bg-surface border-r border-white/[0.07] flex flex-col h-full select-none flex-shrink-0">
@@ -88,32 +99,72 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
 
         {/* Channels Section */}
         <div>
-          <div className="px-2.5 mb-2 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
-            Channels
+          <div className="px-2.5 mb-2 flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-text-muted">
+              Channels
+            </span>
+            {onOpenCreateChannel && (
+              <button
+                type="button"
+                onClick={() => onOpenCreateChannel('text')}
+                className="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-card transition-colors"
+                title="Create Text Channel"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
           <div className="space-y-0.5">
             {textChannels.map((channel) => {
               const isActive = !isFriendsActive && activeChannel === channel.id;
+              const unreadLabel = formatUnread(unreadCounts[channel.id]);
+              const canDelete = onDeleteChannel && channel.id !== 'general';
               return (
-                <button
+                <div
                   key={channel.id}
-                  onClick={() => onSelectChannel(channel.id)}
-                  type="button"
                   className={clsx(
-                    'w-full flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 group',
+                    'w-full flex items-center rounded-lg text-xs font-medium transition-all duration-150 group',
                     isActive
                       ? 'bg-card text-text-primary shadow-sm border border-white/[0.06]'
+                      : unreadLabel
+                      ? 'text-text-primary hover:bg-card/40 border border-transparent'
                       : 'text-text-secondary hover:bg-card/40 hover:text-text-primary border border-transparent'
                   )}
                 >
-                  <Hash
-                    className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
-                      'text-accent': isActive,
-                      'text-text-muted group-hover:text-text-secondary': !isActive,
-                    })}
-                  />
-                  <span className="truncate flex-1 text-left">{channel.name}</span>
-                </button>
+                  <button
+                    onClick={() => onSelectChannel(channel.id)}
+                    type="button"
+                    className="flex-1 flex items-center px-2.5 py-1.5 min-w-0 text-left"
+                  >
+                    <Hash
+                      className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
+                        'text-accent': isActive,
+                        'text-text-muted group-hover:text-text-secondary': !isActive,
+                      })}
+                    />
+                    <span className="truncate flex-1">{channel.name}</span>
+                  </button>
+
+                  {unreadLabel && (
+                    <span className="mr-1.5 px-1.5 py-0.2 rounded-full bg-accent text-white text-[10px] font-semibold leading-tight flex-shrink-0">
+                      {unreadLabel}
+                    </span>
+                  )}
+
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteChannel(channel.id);
+                      }}
+                      className="mr-1.5 p-1 rounded text-text-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      title={`Delete #${channel.name}`}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -121,38 +172,77 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
 
         {/* Voice & Video Section */}
         <div>
-          <div className="px-2.5 mb-2 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
-            Voice &amp; Video
+          <div className="px-2.5 mb-2 flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-text-muted">
+              Voice &amp; Video
+            </span>
+            {onOpenCreateChannel && (
+              <button
+                type="button"
+                onClick={() => onOpenCreateChannel('voice')}
+                className="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-card transition-colors"
+                title="Create Voice Channel"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
           <div className="space-y-0.5">
             {voiceChannels.map((channel) => {
               const isActive = !isFriendsActive && activeChannel === channel.id;
+              const unreadLabel = formatUnread(unreadCounts[channel.id]);
+              const canDelete = onDeleteChannel && channel.id !== 'general';
               return (
-                <button
+                <div
                   key={channel.id}
-                  onClick={() => onSelectChannel(channel.id)}
-                  type="button"
                   className={clsx(
-                    'w-full flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 group',
+                    'w-full flex items-center rounded-lg text-xs font-medium transition-all duration-150 group',
                     isActive
                       ? 'bg-card text-text-primary shadow-sm border border-white/[0.06]'
                       : 'text-text-secondary hover:bg-card/40 hover:text-text-primary border border-transparent'
                   )}
                 >
-                  <Volume2
-                    className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
-                      'text-online': isInCall && isActive,
-                      'text-accent': isActive && !isInCall,
-                      'text-text-muted group-hover:text-text-secondary': !isActive,
-                    })}
-                  />
-                  <span className="truncate flex-1 text-left">{channel.name}</span>
+                  <button
+                    onClick={() => onSelectChannel(channel.id)}
+                    type="button"
+                    className="flex-1 flex items-center px-2.5 py-1.5 min-w-0 text-left"
+                  >
+                    <Volume2
+                      className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
+                        'text-online': isInCall && isActive,
+                        'text-accent': isActive && !isInCall,
+                        'text-text-muted group-hover:text-text-secondary': !isActive,
+                      })}
+                    />
+                    <span className="truncate flex-1">{channel.name}</span>
+                  </button>
+
                   {isInCall && isActive && (
-                    <span className="text-[10px] font-medium text-online bg-online/10 px-1.5 py-0.5 rounded-full">
+                    <span className="mr-1.5 text-[10px] font-medium text-online bg-online/10 px-1.5 py-0.5 rounded-full flex-shrink-0">
                       Live
                     </span>
                   )}
-                </button>
+
+                  {!isInCall && unreadLabel && (
+                    <span className="mr-1.5 px-1.5 py-0.2 rounded-full bg-accent text-white text-[10px] font-semibold leading-tight flex-shrink-0">
+                      {unreadLabel}
+                    </span>
+                  )}
+
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteChannel(channel.id);
+                      }}
+                      className="mr-1.5 p-1 rounded text-text-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      title={`Delete ${channel.name}`}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -172,6 +262,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
               {friends.map((friend) => {
                 const dmRoomId = getDmRoomId(username, friend.username);
                 const isActive = !isFriendsActive && activeChannel === dmRoomId;
+                const unreadLabel = formatUnread(unreadCounts[dmRoomId]);
                 return (
                   <button
                     key={friend.username}
@@ -181,6 +272,8 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
                       'w-full flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 group',
                       isActive
                         ? 'bg-card text-text-primary shadow-sm border border-white/[0.06]'
+                        : unreadLabel
+                        ? 'text-text-primary hover:bg-card/40 border border-transparent'
                         : 'text-text-secondary hover:bg-card/40 hover:text-text-primary border border-transparent'
                     )}
                   >
@@ -196,11 +289,15 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
                       />
                     </div>
                     <span className="truncate flex-1 text-left">{friend.username}</span>
-                    {isInCall && isActive && (
+                    {isInCall && isActive ? (
                       <span className="text-[10px] font-medium text-online bg-online/10 px-1.5 py-0.5 rounded-full">
                         Live
                       </span>
-                    )}
+                    ) : unreadLabel ? (
+                      <span className="px-1.5 py-0.2 rounded-full bg-accent text-white text-[10px] font-semibold leading-tight">
+                        {unreadLabel}
+                      </span>
+                    ) : null}
                   </button>
                 );
               })}

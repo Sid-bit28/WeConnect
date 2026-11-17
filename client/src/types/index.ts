@@ -7,7 +7,10 @@ export type MessageType =
   | "error"
   | "call-join"
   | "call-leave"
-  | "friend_update";
+  | "friend_update"
+  | "typing"
+  | "unread"
+  | "channel_update";
 
 export interface Message {
   type: MessageType;
@@ -25,6 +28,8 @@ export interface Channel {
   name: string;
   type?: 'text' | 'voice';
   topic?: string;
+  createdBy?: string;
+  createdAt?: number;
   unreadCount?: number;
 }
 

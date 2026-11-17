@@ -142,6 +142,10 @@ func (c *Client) readPump() {
 		}
 
 		switch msg.Type {
+		case "typing":
+			// Ephemeral typing indicator: broadcast to room without persisting
+			c.hub.BroadcastToRoom(c.room, msg)
+
 		case "chat":
 			if strings.TrimSpace(msg.Content) == "" {
 				continue
@@ -152,6 +156,21 @@ func (c *Client) readPump() {
 				}
 			}
 			c.hub.BroadcastToRoom(c.room, msg)
+
+			// Emit unread notifications to users viewing other rooms
+			unreadMsg := Message{
+				Type:      "unread",
+				Room:      c.room,
+				Sender:    c.username,
+				Timestamp: msg.Timestamp,
+			}
+			if strings.HasPrefix(c.room, "dm:") {
+				if otherPeer := getDmOtherPeer(c.room, c.username); otherPeer != "" {
+					c.hub.NotifyUserIfNotInRoom(otherPeer, c.room, unreadMsg)
+				}
+			} else {
+				c.hub.NotifyOtherRooms(c.room, c.username, unreadMsg)
+			}
 
 		case "signal":
 			targetUser := extractTarget(msg.Data)

@@ -91,10 +91,42 @@ func (p *PostgresStore) autoMigrate(ctx context.Context) error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_messages_room_timestamp ON messages(room, timestamp DESC);
+
+	CREATE TABLE IF NOT EXISTS channels (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		type TEXT NOT NULL,
+		topic TEXT NOT NULL DEFAULT '',
+		created_by TEXT NOT NULL DEFAULT 'system',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_channels_created_at ON channels(created_at ASC);
 	`
 
-	_, err := p.pool.Exec(ctx, schema)
-	return err
+	if _, err := p.pool.Exec(ctx, schema); err != nil {
+		return err
+	}
+
+	var count int
+	if err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM channels`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		for _, ch := range defaultChannels() {
+			_, err := p.pool.Exec(ctx,
+				`INSERT INTO channels (id, name, type, topic, created_by, created_at)
+				 VALUES ($1, $2, $3, $4, $5, $6)
+				 ON CONFLICT (id) DO NOTHING`,
+				ch.ID, ch.Name, ch.Type, ch.Topic, ch.CreatedBy, ch.CreatedAt,
+			)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func (p *PostgresStore) Register(username, password string) (*User, string, error) {
@@ -436,6 +468,68 @@ func (p *PostgresStore) GetMessages(room string, limit int) ([]Message, error) {
 		res[len(descMessages)-1-i] = m
 	}
 	return res, nil
+}
+
+func (p *PostgresStore) GetChannels() ([]Channel, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, name, type, topic, created_by, created_at FROM channels ORDER BY created_at ASC, id ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	res := make([]Channel, 0)
+	for rows.Next() {
+		var ch Channel
+		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Type, &ch.Topic, &ch.CreatedBy, &ch.CreatedAt); err != nil {
+			continue
+		}
+		res = append(res, ch)
+	}
+	return res, nil
+}
+
+func (p *PostgresStore) CreateChannel(ch Channel) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if ch.CreatedAt.IsZero() {
+		ch.CreatedAt = time.Now().UTC()
+	}
+
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO channels (id, name, type, topic, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+		ch.ID, ch.Name, ch.Type, ch.Topic, ch.CreatedBy, ch.CreatedAt,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrChannelExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (p *PostgresStore) DeleteChannel(id string) error {
+	if id == "general" {
+		return errors.New("Cannot delete the default #general channel")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := p.pool.Exec(ctx, `DELETE FROM channels WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrChannelNotFound
+	}
+	return nil
 }
 
 func (p *PostgresStore) Close() error {
