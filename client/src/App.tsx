@@ -242,6 +242,7 @@ export function App() {
         ) : isCallViewActive ? (
           <VideoGrid
             localStream={webrtc.localStream}
+            localScreenStream={webrtc.localScreenStream}
             peers={webrtc.peers}
             currentUsername={activeUsername}
             isAudioMuted={webrtc.isAudioMuted}

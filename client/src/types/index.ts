@@ -30,15 +30,26 @@ export interface Channel {
 
 export interface SignalData {
   target: string;
-  signalType: 'offer' | 'answer' | 'candidate' | 'join-call' | 'leave-call';
+  signalType:
+    | 'offer'
+    | 'answer'
+    | 'candidate'
+    | 'join-call'
+    | 'leave-call'
+    | 'screen-offer'
+    | 'screen-answer'
+    | 'screen-candidate'
+    | 'screen-leave';
   payload?: any;
 }
 
 export interface PeerStream {
   peerId: string;
+  username?: string;
   stream: MediaStream;
   isAudioMuted?: boolean;
   isVideoOff?: boolean;
+  isScreen?: boolean;
 }
 
 export interface AuthUser {
