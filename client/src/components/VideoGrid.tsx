@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { MicOff, VideoOff, ScreenShare, MessageSquare } from 'lucide-react';
 import type { PeerStream } from '../types';
 import { CallControls } from './CallControls';
+import { useActiveSpeaker } from '../hooks/useActiveSpeaker';
 
 interface VideoTileProps {
   stream: MediaStream | null;
@@ -12,6 +13,7 @@ interface VideoTileProps {
   isVideoOff?: boolean;
   isScreenSharing?: boolean;
   isScreen?: boolean;
+  isSpeaking?: boolean;
   className?: string;
   objectFit?: 'cover' | 'contain';
 }
@@ -24,6 +26,7 @@ const VideoTile: React.FC<VideoTileProps> = ({
   isVideoOff = false,
   isScreenSharing = false,
   isScreen = false,
+  isSpeaking = false,
   className,
   objectFit = 'cover',
 }) => {
@@ -56,7 +59,10 @@ const VideoTile: React.FC<VideoTileProps> = ({
   return (
     <div
       className={clsx(
-        'relative bg-surface rounded-xl overflow-hidden aspect-video flex items-center justify-center border border-white/[0.08] shadow-xl group',
+        'relative bg-surface rounded-xl overflow-hidden aspect-video flex items-center justify-center border shadow-xl group transition-all duration-150',
+        isSpeaking && !isScreen
+          ? 'border-online ring-2 ring-online/70 shadow-[0_0_24px_rgba(16,185,129,0.2)]'
+          : 'border-white/[0.08]',
         className
       )}
     >
@@ -80,7 +86,7 @@ const VideoTile: React.FC<VideoTileProps> = ({
             className={clsx(
               'w-16 h-16 sm:w-20 sm:h-20 rounded-full border flex items-center justify-center text-xl sm:text-2xl font-semibold shadow-sm transition-all',
               getAvatarStyle(username),
-              !isAudioMuted && 'ring-2 ring-online/40 ring-offset-2 ring-offset-surface'
+              isSpeaking && !isAudioMuted && 'ring-2 ring-online ring-offset-2 ring-offset-surface'
             )}
           >
             {username.charAt(0).toUpperCase()}
@@ -98,7 +104,15 @@ const VideoTile: React.FC<VideoTileProps> = ({
 
       {/* Bottom Status Overlay */}
       <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-none z-10">
-        <div className="bg-canvas/75 backdrop-blur-md border border-white/[0.07] px-2.5 py-1 rounded-lg text-[11px] font-medium text-text-primary truncate max-w-[80%] flex items-center space-x-1">
+        <div
+          className={clsx(
+            'bg-canvas/75 backdrop-blur-md border px-2.5 py-1 rounded-lg text-[11px] font-medium text-text-primary truncate max-w-[80%] flex items-center space-x-1.5',
+            isSpeaking && !isScreen ? 'border-online/50' : 'border-white/[0.07]'
+          )}
+        >
+          {isSpeaking && !isScreen && (
+            <span className="w-1.5 h-1.5 rounded-full bg-online flex-shrink-0" />
+          )}
           <span className="truncate">{username}</span>
           {isLocal && <span className="text-text-muted text-[10px]">(You)</span>}
         </div>
@@ -132,6 +146,12 @@ interface VideoGridProps {
   isVideoOff: boolean;
   isScreenSharing: boolean;
   error?: string | null;
+  audioDevices?: MediaDeviceInfo[];
+  videoDevices?: MediaDeviceInfo[];
+  selectedAudioDeviceId?: string;
+  selectedVideoDeviceId?: string;
+  onSwitchAudioDevice?: (deviceId: string) => void;
+  onSwitchVideoDevice?: (deviceId: string) => void;
   onToggleAudio: () => void;
   onToggleVideo: () => void;
   onToggleScreenShare: () => void;
@@ -149,12 +169,20 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
   isVideoOff,
   isScreenSharing,
   error,
+  audioDevices,
+  videoDevices,
+  selectedAudioDeviceId,
+  selectedVideoDeviceId,
+  onSwitchAudioDevice,
+  onSwitchVideoDevice,
   onToggleAudio,
   onToggleVideo,
   onToggleScreenShare,
   onLeaveCall,
   onBackToChat,
 }) => {
+  const speakingUsers = useActiveSpeaker(localStream, currentUsername, isAudioMuted, peers);
+
   const webcamPeers = peers.filter((p) => !p.isScreen);
   const screenPeers = peers.filter((p) => p.isScreen);
 
@@ -182,6 +210,8 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
     if (totalParticipants <= 4) return 'grid-cols-2 max-w-5xl';
     return 'grid-cols-2 lg:grid-cols-3 max-w-6xl';
   };
+
+  const localIsSpeaking = speakingUsers.has(currentUsername);
 
   return (
     <div className="flex-1 flex flex-col bg-canvas h-full relative overflow-hidden select-none">
@@ -241,19 +271,24 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
                   isLocal={true}
                   isAudioMuted={isAudioMuted}
                   isVideoOff={isVideoOff}
+                  isSpeaking={localIsSpeaking}
                 />
               </div>
 
-              {webcamPeers.map((peer) => (
-                <div key={peer.peerId} className="w-40 sm:w-48 aspect-video flex-shrink-0">
-                  <VideoTile
-                    stream={peer.stream}
-                    username={peer.username || peer.peerId}
-                    isAudioMuted={peer.isAudioMuted}
-                    isVideoOff={peer.isVideoOff}
-                  />
-                </div>
-              ))}
+              {webcamPeers.map((peer) => {
+                const peerLabel = peer.username || peer.peerId;
+                return (
+                  <div key={peer.peerId} className="w-40 sm:w-48 aspect-video flex-shrink-0">
+                    <VideoTile
+                      stream={peer.stream}
+                      username={peerLabel}
+                      isAudioMuted={peer.isAudioMuted}
+                      isVideoOff={peer.isVideoOff}
+                      isSpeaking={speakingUsers.has(peerLabel)}
+                    />
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : (
@@ -264,17 +299,22 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
               isLocal={true}
               isAudioMuted={isAudioMuted}
               isVideoOff={isVideoOff}
+              isSpeaking={localIsSpeaking}
             />
 
-            {webcamPeers.map((peer) => (
-              <VideoTile
-                key={peer.peerId}
-                stream={peer.stream}
-                username={peer.username || peer.peerId}
-                isAudioMuted={peer.isAudioMuted}
-                isVideoOff={peer.isVideoOff}
-              />
-            ))}
+            {webcamPeers.map((peer) => {
+              const peerLabel = peer.username || peer.peerId;
+              return (
+                <VideoTile
+                  key={peer.peerId}
+                  stream={peer.stream}
+                  username={peerLabel}
+                  isAudioMuted={peer.isAudioMuted}
+                  isVideoOff={peer.isVideoOff}
+                  isSpeaking={speakingUsers.has(peerLabel)}
+                />
+              );
+            })}
           </div>
         )}
       </div>
@@ -285,6 +325,12 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
           isAudioMuted={isAudioMuted}
           isVideoOff={isVideoOff}
           isScreenSharing={isScreenSharing}
+          audioDevices={audioDevices}
+          videoDevices={videoDevices}
+          selectedAudioDeviceId={selectedAudioDeviceId}
+          selectedVideoDeviceId={selectedVideoDeviceId}
+          onSwitchAudioDevice={onSwitchAudioDevice}
+          onSwitchVideoDevice={onSwitchVideoDevice}
           onToggleAudio={onToggleAudio}
           onToggleVideo={onToggleVideo}
           onToggleScreenShare={onToggleScreenShare}

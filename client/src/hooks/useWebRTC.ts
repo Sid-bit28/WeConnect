@@ -29,6 +29,10 @@ export function useWebRTC({
   const [isVideoOff, setIsVideoOff] = useState<boolean>(false);
   const [isScreenSharing, setIsScreenSharing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>('');
+  const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>('');
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -39,7 +43,64 @@ export function useWebRTC({
   const remoteWebcamMap = useRef<Map<string, MediaStream>>(new Map());
   const remoteScreenMap = useRef<Map<string, MediaStream>>(new Map());
   const isInCallRef = useRef<boolean>(false);
+  const isAudioMutedRef = useRef<boolean>(false);
+  const isVideoOffRef = useRef<boolean>(false);
   const iceServersRef = useRef<RTCIceServer[]>(DEFAULT_ICE_SERVERS);
+
+  useEffect(() => {
+    isAudioMutedRef.current = isAudioMuted;
+  }, [isAudioMuted]);
+
+  useEffect(() => {
+    isVideoOffRef.current = isVideoOff;
+  }, [isVideoOff]);
+
+  const refreshDevices = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
+      return;
+    }
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audios = devices.filter((d) => d.kind === 'audioinput');
+      const videos = devices.filter((d) => d.kind === 'videoinput');
+      setAudioDevices(audios);
+      setVideoDevices(videos);
+
+      const currentAudioTrack = localStreamRef.current?.getAudioTracks()[0];
+      const currentVideoTrack = localStreamRef.current?.getVideoTracks()[0];
+      const activeAudioId = currentAudioTrack?.getSettings().deviceId || '';
+      const activeVideoId = currentVideoTrack?.getSettings().deviceId || '';
+
+      if (activeAudioId) {
+        setSelectedAudioDeviceId(activeAudioId);
+      } else if (audios.length > 0) {
+        setSelectedAudioDeviceId((prev) => prev || audios[0].deviceId);
+      }
+
+      if (activeVideoId) {
+        setSelectedVideoDeviceId(activeVideoId);
+      } else if (videos.length > 0) {
+        setSelectedVideoDeviceId((prev) => prev || videos[0].deviceId);
+      }
+    } catch {
+      // Ignore device enumeration failures
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isInCall) return;
+    void refreshDevices();
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.addEventListener) {
+      return;
+    }
+    const handleDeviceChange = () => {
+      void refreshDevices();
+    };
+    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+    };
+  }, [isInCall, refreshDevices]);
 
   // Fetch dynamic ICE configuration (STUN/TURN) from server on mount
   useEffect(() => {
@@ -630,6 +691,104 @@ export function useWebRTC({
     setIsVideoOff(nextOff);
   }, [isVideoOff]);
 
+  // Mid-call Microphone Switcher
+  const switchAudioDevice = useCallback(async (deviceId: string) => {
+    if (!isInCallRef.current || !deviceId) return;
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
+
+    setError(null);
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: deviceId } },
+        video: false,
+      });
+      const newTrack = newStream.getAudioTracks()[0];
+      if (!newTrack) return;
+
+      // Preserve current mute state
+      newTrack.enabled = !isAudioMutedRef.current;
+
+      // Swap track on all active camera peer connections (never touching screen connections)
+      const replacePromises: Promise<void>[] = [];
+      peerConnections.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'audio');
+        if (sender) {
+          replacePromises.push(sender.replaceTrack(newTrack));
+        }
+      });
+      await Promise.allSettled(replacePromises);
+
+      // Update local stream and stop old audio tracks
+      const currentStream = localStreamRef.current;
+      if (currentStream) {
+        currentStream.getAudioTracks().forEach((oldTrack) => {
+          currentStream.removeTrack(oldTrack);
+          oldTrack.stop();
+        });
+        currentStream.addTrack(newTrack);
+        const updated = new MediaStream(currentStream.getTracks());
+        localStreamRef.current = updated;
+        setLocalStream(updated);
+      } else {
+        localStreamRef.current = newStream;
+        setLocalStream(newStream);
+      }
+
+      setSelectedAudioDeviceId(deviceId);
+    } catch (err: any) {
+      setError(`Failed to switch microphone: ${err?.message || 'Device unavailable'}`);
+    }
+  }, []);
+
+  // Mid-call Camera Switcher
+  const switchVideoDevice = useCallback(async (deviceId: string) => {
+    if (!isInCallRef.current || !deviceId) return;
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
+
+    setError(null);
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId } },
+        audio: false,
+      });
+      const newTrack = newStream.getVideoTracks()[0];
+      if (!newTrack) return;
+
+      // Preserve current camera-off state
+      newTrack.enabled = !isVideoOffRef.current;
+
+      // Swap track on all active camera peer connections (never touching screen connections)
+      const replacePromises: Promise<void>[] = [];
+      peerConnections.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) {
+          replacePromises.push(sender.replaceTrack(newTrack));
+        }
+      });
+      await Promise.allSettled(replacePromises);
+
+      // Update local stream and stop old video tracks
+      const currentStream = localStreamRef.current;
+      if (currentStream) {
+        currentStream.getVideoTracks().forEach((oldTrack) => {
+          currentStream.removeTrack(oldTrack);
+          oldTrack.stop();
+        });
+        currentStream.addTrack(newTrack);
+        const updated = new MediaStream(currentStream.getTracks());
+        localStreamRef.current = updated;
+        setLocalStream(updated);
+      } else {
+        localStreamRef.current = newStream;
+        setLocalStream(newStream);
+      }
+
+      setSelectedVideoDeviceId(deviceId);
+    } catch (err: any) {
+      setError(`Failed to switch camera: ${err?.message || 'Device unavailable'}`);
+    }
+  }, []);
+
   // Clean up if room unmounts or changes
   useEffect(() => {
     return () => {
@@ -646,11 +805,17 @@ export function useWebRTC({
     isVideoOff,
     isScreenSharing,
     error,
+    audioDevices,
+    videoDevices,
+    selectedAudioDeviceId,
+    selectedVideoDeviceId,
     joinCall,
     leaveCall,
     toggleAudio,
     toggleVideo,
     toggleScreenShare,
+    switchAudioDevice,
+    switchVideoDevice,
     handleSignal,
   };
 }

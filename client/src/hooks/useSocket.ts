@@ -293,6 +293,10 @@ export function useSocket(
             case 'signal':
             case 'call-join':
             case 'call-leave':
+            case 'call-decline':
+            case 'incoming_call':
+            case 'call_ended':
+            case 'call_declined':
             case 'friend_update':
             case 'unread':
             case 'channel_update':

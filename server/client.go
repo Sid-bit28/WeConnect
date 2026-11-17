@@ -136,6 +136,9 @@ func (c *Client) readPump() {
 			continue
 		}
 
+		// Preserve requested room for cross-room call-decline lookup before enforcing session room
+		requestedRoom := strings.TrimSpace(msg.Room)
+
 		// Enforce session authenticity
 		msg.Room = c.room
 		msg.Sender = c.username
@@ -203,6 +206,67 @@ func (c *Client) readPump() {
 					Sender:    "system",
 					Content:   fmt.Sprintf("User '%s' not found in room '%s'", targetUser, c.room),
 					Timestamp: time.Now().UnixMilli(),
+				})
+			}
+
+		case "call-join":
+			c.hub.BroadcastToRoom(c.room, msg)
+			if strings.HasPrefix(c.room, "dm:") {
+				if otherPeer := getDmOtherPeer(c.room, c.username); otherPeer != "" {
+					c.hub.NotifyUser(otherPeer, Message{
+						Type:      "incoming_call",
+						Room:      c.room,
+						Sender:    c.username,
+						Timestamp: msg.Timestamp,
+					})
+				}
+			}
+
+		case "call-leave":
+			c.hub.BroadcastToRoom(c.room, msg)
+			if strings.HasPrefix(c.room, "dm:") {
+				if otherPeer := getDmOtherPeer(c.room, c.username); otherPeer != "" {
+					c.hub.NotifyUser(otherPeer, Message{
+						Type:      "call_ended",
+						Room:      c.room,
+						Sender:    c.username,
+						Timestamp: msg.Timestamp,
+					})
+				}
+			}
+
+		case "call-decline":
+			c.hub.BroadcastToRoom(c.room, msg)
+			dmRoom := c.room
+			if !strings.HasPrefix(dmRoom, "dm:") {
+				// Support declining an incoming DM call while viewing another room
+				cand := requestedRoom
+				if cand == "" {
+					if m, ok := msg.Data.(map[string]any); ok {
+						if r, ok := m["room"].(string); ok {
+							cand = strings.TrimSpace(r)
+						}
+					}
+				}
+				if strings.HasPrefix(cand, "dm:") && isAuthorizedForRoom(cand, c.username) {
+					dmRoom = cand
+				}
+			}
+			if strings.HasPrefix(dmRoom, "dm:") {
+				if otherPeer := getDmOtherPeer(dmRoom, c.username); otherPeer != "" {
+					c.hub.NotifyUser(otherPeer, Message{
+						Type:      "call_declined",
+						Room:      dmRoom,
+						Sender:    c.username,
+						Timestamp: msg.Timestamp,
+					})
+				}
+			} else if targetUser := extractTarget(msg.Data); targetUser != "" {
+				c.hub.NotifyUser(targetUser, Message{
+					Type:      "call_declined",
+					Room:      c.room,
+					Sender:    c.username,
+					Timestamp: msg.Timestamp,
 				})
 			}
 

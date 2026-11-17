@@ -1488,3 +1488,74 @@ func TestMessageEditDeleteReactAndSearch(t *testing.T) {
 		t.Fatalf("expected 404 for deleting already-deleted message, got %d", w.Code)
 	}
 }
+
+func TestIncomingDMCallNotifications(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	_, aliceToken, _ := store.Register("alice", "password123")
+	_, bobToken, _ := store.Register("bob", "password123")
+	_, charlieToken, _ := store.Register("charlie", "password123")
+
+	// Bob & Charlie are connected in "random"
+	bobWS := connectWS(t, server.URL, "random", bobToken)
+	defer bobWS.Close()
+	_ = readNextMessage(t, bobWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobWS, 2*time.Second) // users
+
+	charlieWS := connectWS(t, server.URL, "random", charlieToken)
+	defer charlieWS.Close()
+	_ = readNextMessage(t, charlieWS, 2*time.Second) // join
+	_ = readNextMessage(t, charlieWS, 2*time.Second) // users
+	_ = readNextMessage(t, bobWS, 2*time.Second)     // charlie join
+	_ = readNextMessage(t, bobWS, 2*time.Second)     // users
+
+	// Alice connects to dm:alice:bob
+	aliceDMWS := connectWS(t, server.URL, "dm:alice:bob", aliceToken)
+	defer aliceDMWS.Close()
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second) // users
+
+	// 1. Alice sends call-join -> Bob receives incoming_call
+	if err := aliceDMWS.WriteJSON(Message{Type: "call-join"}); err != nil {
+		t.Fatalf("alice call-join failed: %v", err)
+	}
+	aliceEcho := readNextMessage(t, aliceDMWS, 2*time.Second)
+	if aliceEcho.Type != "call-join" {
+		t.Fatalf("expected call-join room broadcast echo, got %+v", aliceEcho)
+	}
+
+	bobRing := readNextMessage(t, bobWS, 2*time.Second)
+	if bobRing.Type != "incoming_call" || bobRing.Room != "dm:alice:bob" || bobRing.Sender != "alice" {
+		t.Fatalf("bob expected incoming_call from alice for dm:alice:bob, got %+v", bobRing)
+	}
+
+	// Charlie should NOT receive incoming_call
+	_ = charlieWS.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if _, raw, err := charlieWS.ReadMessage(); err == nil {
+		t.Fatalf("charlie should NOT receive incoming_call, got %s", string(raw))
+	}
+
+	// 2. Bob declines from random (passing dm:alice:bob) -> Alice receives call_declined
+	if err := bobWS.WriteJSON(Message{Type: "call-decline", Room: "dm:alice:bob"}); err != nil {
+		t.Fatalf("bob call-decline failed: %v", err)
+	}
+	_ = readNextMessage(t, bobWS, 2*time.Second) // room broadcast echo in random
+	aliceDeclined := readNextMessage(t, aliceDMWS, 2*time.Second)
+	if aliceDeclined.Type != "call_declined" || aliceDeclined.Room != "dm:alice:bob" || aliceDeclined.Sender != "bob" {
+		t.Fatalf("alice expected call_declined from bob, got %+v", aliceDeclined)
+	}
+
+	// 3. Alice sends call-leave -> Bob receives call_ended
+	if err := aliceDMWS.WriteJSON(Message{Type: "call-leave"}); err != nil {
+		t.Fatalf("alice call-leave failed: %v", err)
+	}
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second) // room broadcast echo
+	bobEnded := readNextMessage(t, bobWS, 2*time.Second)
+	if bobEnded.Type != "call_ended" || bobEnded.Room != "dm:alice:bob" || bobEnded.Sender != "alice" {
+		t.Fatalf("bob expected call_ended from alice, got %+v", bobEnded)
+	}
+}

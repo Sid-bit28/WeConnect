@@ -12,7 +12,11 @@ export type MessageType =
   | "unread"
   | "channel_update"
   | "message_update"
-  | "message_delete";
+  | "message_delete"
+  | "incoming_call"
+  | "call_ended"
+  | "call_declined"
+  | "call-decline";
 
 export interface Attachment {
   url: string;

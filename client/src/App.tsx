@@ -7,13 +7,14 @@ import { FriendsView } from './components/FriendsView';
 import { AuthScreen } from './components/AuthScreen';
 import { CreateChannelModal } from './components/CreateChannelModal';
 import { NotificationToast, type NotificationItem } from './components/NotificationToast';
+import { IncomingCallBanner, type IncomingCall } from './components/IncomingCallBanner';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
 import type { Channel, Message, MessageData, AuthUser, Friend } from './types';
 import { getApiBaseUrl } from './utils/api';
 import { isDmRoom, getDmPeerUsername } from './utils/dm';
-import { playNotificationChime } from './utils/sound';
+import { playNotificationChime, startRingtone } from './utils/sound';
 import { Video, Loader2 } from 'lucide-react';
 
 const DEFAULT_CHANNELS: Channel[] = [
@@ -42,6 +43,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const [createChannelType, setCreateChannelType] = useState<'text' | 'voice'>('text');
   const [channelError, setChannelError] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
 
   const handleSignalRef = useRef<((msg: Message) => Promise<void>) | null>(null);
   const leaveCallRef = useRef<(() => void) | null>(null);
@@ -50,6 +52,10 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const isFriendsViewActiveRef = useRef<boolean>(isFriendsViewActive);
   const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const notificationRequestedRef = useRef<boolean>(false);
+  const incomingCallRef = useRef<IncomingCall | null>(null);
+  const ringtoneStopRef = useRef<(() => void) | null>(null);
+  const ringTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingAutoJoinRoomRef = useRef<string | null>(null);
 
   useEffect(() => {
     activeChannelIdRef.current = activeChannelId;
@@ -59,12 +65,36 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     isFriendsViewActiveRef.current = isFriendsViewActive;
   }, [isFriendsViewActive]);
 
-  // Clean up toast auto-dismiss timers on unmount
+  useEffect(() => {
+    incomingCallRef.current = incomingCall;
+  }, [incomingCall]);
+
+  const clearIncomingCall = useCallback(() => {
+    if (ringtoneStopRef.current) {
+      ringtoneStopRef.current();
+      ringtoneStopRef.current = null;
+    }
+    if (ringTimeoutRef.current) {
+      clearTimeout(ringTimeoutRef.current);
+      ringTimeoutRef.current = null;
+    }
+    setIncomingCall(null);
+  }, []);
+
+  // Clean up toast timers & ringtone on unmount
   useEffect(() => {
     const timers = toastTimersRef.current;
     return () => {
       timers.forEach((timer) => clearTimeout(timer));
       timers.clear();
+      if (ringtoneStopRef.current) {
+        ringtoneStopRef.current();
+        ringtoneStopRef.current = null;
+      }
+      if (ringTimeoutRef.current) {
+        clearTimeout(ringTimeoutRef.current);
+        ringTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -240,6 +270,31 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             pushDmNotification(msg.room, msg.sender, msg.content || 'Sent you a message');
           }
         }
+      } else if (msg.type === 'incoming_call' && msg.room && msg.sender) {
+        if (
+          !isInCallRef.current &&
+          msg.sender.toLowerCase() !== activeUsername.toLowerCase()
+        ) {
+          clearIncomingCall();
+          setIncomingCall({
+            room: msg.room,
+            sender: msg.sender,
+            timestamp: msg.timestamp || Date.now(),
+          });
+          ringtoneStopRef.current = startRingtone();
+          ringTimeoutRef.current = setTimeout(() => {
+            clearIncomingCall();
+          }, 30000);
+        }
+      } else if (msg.type === 'call_ended') {
+        if (
+          incomingCallRef.current &&
+          (!msg.room || incomingCallRef.current.room === msg.room)
+        ) {
+          clearIncomingCall();
+        }
+      } else if (msg.type === 'call_declined' && msg.room && msg.sender) {
+        pushDmNotification(msg.room, msg.sender, 'Declined the call');
       }
 
       if (handleSignalRef.current) {
@@ -284,6 +339,45 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       setIsCallViewActive(false);
     }
   }, [webrtc.isInCall]);
+
+  // Auto-join call once WebSocket connects to the accepted DM call room
+  useEffect(() => {
+    if (
+      status === 'connected' &&
+      pendingAutoJoinRoomRef.current &&
+      activeChannelId === pendingAutoJoinRoomRef.current &&
+      !webrtc.isInCall
+    ) {
+      pendingAutoJoinRoomRef.current = null;
+      void webrtc.joinCall();
+    }
+  }, [status, activeChannelId, webrtc.isInCall, webrtc.joinCall]);
+
+  const handleAcceptIncomingCall = () => {
+    const call = incomingCallRef.current;
+    if (!call) return;
+    clearIncomingCall();
+    setNotifications((prev) => prev.filter((n) => n.room !== call.room));
+
+    if (activeChannelId === call.room && status === 'connected') {
+      setIsFriendsViewActive(false);
+      clearUnread(call.room);
+      void webrtc.joinCall();
+    } else {
+      pendingAutoJoinRoomRef.current = call.room;
+      setActiveChannelId(call.room);
+      setIsFriendsViewActive(false);
+      clearUnread(call.room);
+    }
+  };
+
+  const handleDeclineIncomingCall = () => {
+    const call = incomingCallRef.current;
+    clearIncomingCall();
+    if (call) {
+      send('call-decline', undefined, { target: call.sender, room: call.room });
+    }
+  };
 
   const handleSendMessage = (content: string, data?: MessageData) => {
     requestNotificationPermissionOnce();
@@ -376,6 +470,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   };
 
   const handleLogout = () => {
+    clearIncomingCall();
     if (webrtc.isInCall) {
       webrtc.leaveCall();
     }
@@ -456,6 +551,12 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             isVideoOff={webrtc.isVideoOff}
             isScreenSharing={webrtc.isScreenSharing}
             error={webrtc.error}
+            audioDevices={webrtc.audioDevices}
+            videoDevices={webrtc.videoDevices}
+            selectedAudioDeviceId={webrtc.selectedAudioDeviceId}
+            selectedVideoDeviceId={webrtc.selectedVideoDeviceId}
+            onSwitchAudioDevice={webrtc.switchAudioDevice}
+            onSwitchVideoDevice={webrtc.switchVideoDevice}
             onToggleAudio={webrtc.toggleAudio}
             onToggleVideo={webrtc.toggleVideo}
             onToggleScreenShare={webrtc.toggleScreenShare}
@@ -501,6 +602,13 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
         defaultType={createChannelType}
         onClose={() => setIsCreateChannelOpen(false)}
         onCreate={handleCreateChannel}
+      />
+
+      {/* Incoming 1-on-1 DM Call Banner */}
+      <IncomingCallBanner
+        call={incomingCall}
+        onAccept={handleAcceptIncomingCall}
+        onDecline={handleDeclineIncomingCall}
       />
 
       {/* Friend DM Notification Toasts */}
