@@ -4,12 +4,12 @@ import { ChatArea } from './components/ChatArea';
 import { VideoGrid } from './components/VideoGrid';
 import { UserList } from './components/UserList';
 import { FriendsView } from './components/FriendsView';
-import { AuthModal } from './components/AuthModal';
+import { AuthScreen } from './components/AuthScreen';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
-import type { Channel, Message } from './types';
-import { Compass, Plus, Radio, User, Check, Video } from 'lucide-react';
+import type { Channel, Message, AuthUser } from './types';
+import { Compass, Plus, Radio, User, Video, Loader2 } from 'lucide-react';
 
 const DEFAULT_CHANNELS: Channel[] = [
   { id: 'general', name: 'general', type: 'text', topic: 'General discussion and hangout' },
@@ -19,32 +19,14 @@ const DEFAULT_CHANNELS: Channel[] = [
   { id: 'gaming', name: 'Gaming', type: 'voice', topic: 'Low latency voice chat for gaming' },
 ];
 
-export function App() {
-  // Authentication hook
-  const {
-    user,
-    token,
-    login,
-    register,
-    logout,
-    error: authError,
-    setError: setAuthError,
-  } = useAuth();
+interface AuthenticatedAppProps {
+  user: AuthUser;
+  token: string;
+  onLogout: () => void;
+}
 
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-
-  // Guest username fallback if not authenticated
-  const [guestUsername, setGuestUsername] = useState<string>(() => {
-    const saved = localStorage.getItem('weconnect_guest_username');
-    if (saved && saved.trim()) return saved.trim();
-    return `User${Math.floor(1000 + Math.random() * 9000)}`;
-  });
-
-  const [isEditingUsername, setIsEditingUsername] = useState(false);
-  const [tempUsername, setTempUsername] = useState(guestUsername);
-
-  // Current active username (authenticated username takes priority)
-  const activeUsername = user?.username || guestUsername;
+function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
+  const activeUsername = user.username;
 
   // Active channel & view mode
   const [activeChannelId, setActiveChannelId] = useState<string>('general');
@@ -55,7 +37,7 @@ export function App() {
   // Ref to route incoming socket messages to WebRTC handler
   const handleSignalRef = useRef<((msg: Message) => Promise<void>) | null>(null);
 
-  // WebSocket hook
+  // WebSocket hook connects strictly with authenticated username
   const { status, messages, users, error: socketError, send, sendSignal, connect } = useSocket(
     activeChannelId,
     activeUsername,
@@ -99,15 +81,6 @@ export function App() {
     send('chat', content);
   };
 
-  const handleSaveUsername = () => {
-    const trimmed = tempUsername.trim();
-    if (trimmed && trimmed !== guestUsername) {
-      setGuestUsername(trimmed);
-      localStorage.setItem('weconnect_guest_username', trimmed);
-    }
-    setIsEditingUsername(false);
-  };
-
   const handleChannelSelect = (channelId: string) => {
     const targetChannel = DEFAULT_CHANNELS.find((c) => c.id === channelId);
     setActiveChannelId(channelId);
@@ -121,6 +94,14 @@ export function App() {
 
   const handleSelectFriends = () => {
     setIsFriendsViewActive(true);
+  };
+
+  const handleLogout = () => {
+    // Leave any active call before logging out
+    if (webrtc.isInCall) {
+      webrtc.leaveCall();
+    }
+    onLogout();
   };
 
   return (
@@ -169,23 +150,13 @@ export function App() {
 
         <div className="flex-1" />
 
-        {/* Change Username / Profile Button */}
-        <button
-          type="button"
-          onClick={() => {
-            if (user) {
-              // If authenticated, allow logging out or changing settings
-              setIsAuthModalOpen(true);
-            } else {
-              setTempUsername(guestUsername);
-              setIsEditingUsername(true);
-            }
-          }}
-          className="w-12 h-12 rounded-[24px] hover:rounded-[16px] bg-discord-darker hover:bg-discord-hover flex items-center justify-center text-discord-muted hover:text-white transition-all"
-          title={user ? `Logged in as ${user.username}` : 'Change Username or Log In'}
+        {/* User Profile Badge in Rail */}
+        <div
+          className="w-12 h-12 rounded-[24px] bg-discord-darker flex items-center justify-center text-discord-muted"
+          title={`Signed in as ${activeUsername}`}
         >
           <User className="w-5 h-5" />
-        </button>
+        </div>
       </div>
 
       {/* 2. Channel & Friends Sidebar */}
@@ -201,9 +172,7 @@ export function App() {
         onLeaveCall={webrtc.leaveCall}
         isFriendsActive={isFriendsViewActive}
         onSelectFriends={handleSelectFriends}
-        isAuthenticated={!!user}
-        onLogout={logout}
-        onOpenAuth={() => setIsAuthModalOpen(true)}
+        onLogout={handleLogout}
       />
 
       {/* 3. Center Area: FriendsView, VideoGrid, or ChatArea */}
@@ -221,7 +190,7 @@ export function App() {
                 setIsFriendsViewActive(false);
                 setIsCallViewActive(true);
               }}
-              className="bg-discord-online text-white px-3 py-1 rounded hover:bg-discord-online/90 flex items-center space-x-1.5 transition-colors"
+              className="bg-discord-online text-white px-3 py-1 rounded hover:bg-discord-online/90 flex items-center space-x-1.5 transition-colors cursor-pointer"
             >
               <Video className="w-3.5 h-3.5" />
               <span>Expand Video Grid</span>
@@ -237,7 +206,6 @@ export function App() {
               setActiveChannelId(channelId);
               setIsFriendsViewActive(false);
             }}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
           />
         ) : isCallViewActive ? (
           <VideoGrid
@@ -282,79 +250,58 @@ export function App() {
           currentUsername={activeUsername}
         />
       )}
+    </div>
+  );
+}
 
-      {/* Guest Username Change Modal */}
-      {isEditingUsername && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-discord-darker border border-discord-darkest rounded-lg max-w-sm w-full p-5 shadow-2xl">
-            <h3 className="text-lg font-bold text-discord-heading mb-1">Change Display Name</h3>
-            <p className="text-xs text-discord-muted mb-4">
-              Enter your temporary display name or log in to a permanent account.
-            </p>
+export function App() {
+  const {
+    user,
+    token,
+    isLoading,
+    login,
+    register,
+    logout,
+    error: authError,
+    setError: setAuthError,
+  } = useAuth();
 
-            <div className="mb-4">
-              <label className="text-[11px] font-bold uppercase text-discord-muted block mb-1">
-                Username
-              </label>
-              <input
-                type="text"
-                value={tempUsername}
-                onChange={(e) => setTempUsername(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSaveUsername();
-                  if (e.key === 'Escape') setIsEditingUsername(false);
-                }}
-                autoFocus
-                maxLength={24}
-                className="w-full bg-discord-input text-discord-heading px-3 py-2 rounded text-sm focus:outline-none focus:ring-1 focus:ring-discord-blurple"
-              />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsEditingUsername(false);
-                  setIsAuthModalOpen(true);
-                }}
-                className="text-xs text-discord-blurple hover:underline font-medium"
-              >
-                Log In / Register
-              </button>
-
-              <div className="flex space-x-2">
-                <button
-                  type="button"
-                  onClick={() => setIsEditingUsername(false)}
-                  className="px-3 py-1.5 text-xs font-semibold text-discord-text hover:underline"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveUsername}
-                  disabled={!tempUsername.trim()}
-                  className="bg-discord-blurple hover:bg-discord-blurple-hover disabled:opacity-50 text-white px-4 py-1.5 rounded text-xs font-semibold transition-colors flex items-center space-x-1"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Save</span>
-                </button>
-              </div>
-            </div>
+  // 1. Initial Session Validation Loading Screen
+  if (isLoading) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-discord-darkest text-discord-text select-none">
+        <div className="flex flex-col items-center space-y-4">
+          <div className="w-16 h-16 bg-discord-blurple rounded-2xl flex items-center justify-center shadow-lg animate-pulse">
+            <Radio className="w-9 h-9 text-white" />
+          </div>
+          <div className="flex items-center space-x-2 text-sm font-semibold text-discord-heading">
+            <Loader2 className="w-4 h-4 animate-spin text-discord-blurple" />
+            <span>Loading WeConnect...</span>
           </div>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {/* Auth Modal (Login / Register) */}
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
+  // 2. Auth-First Gate: Unauthenticated users MUST log in or register first
+  if (!user || !token) {
+    return (
+      <AuthScreen
         onLogin={login}
         onRegister={register}
         error={authError}
         onClearError={() => setAuthError(null)}
       />
-    </div>
+    );
+  }
+
+  // 3. Authenticated Application: WebSocket and WebRTC only initialize with verified user
+  return (
+    <AuthenticatedApp
+      user={user}
+      token={token}
+      onLogout={logout}
+    />
   );
 }
 

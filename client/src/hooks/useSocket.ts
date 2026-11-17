@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Message, MessageType, ConnectionStatus } from '../types';
+import { getWsBaseUrl } from '../utils/api';
 
 interface UseSocketOptions {
   serverUrl?: string;
@@ -14,7 +15,7 @@ export function useSocket(
   options: UseSocketOptions = {}
 ) {
   const {
-    serverUrl = 'ws://localhost:8080/ws',
+    serverUrl = getWsBaseUrl(),
     reconnectInterval = 3000,
     maxReconnectAttempts = 5,
     onMessage,

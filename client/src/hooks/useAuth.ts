@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { AuthUser } from '../types';
+import { getApiBaseUrl } from '../utils/api';
 
 const TOKEN_KEY = 'weconnect_auth_token';
 const USER_KEY = 'weconnect_auth_user';
-const API_BASE = 'http://localhost:8080';
 
 export function useAuth() {
   const [user, setUser] = useState<AuthUser | null>(() => {
@@ -32,7 +32,8 @@ export function useAuth() {
       }
 
       try {
-        const res = await fetch(`${API_BASE}/api/auth/me`, {
+        const apiBase = getApiBaseUrl();
+        const res = await fetch(`${apiBase}/api/auth/me`, {
           headers: {
             Authorization: `Bearer ${storedToken}`,
           },
@@ -65,7 +66,8 @@ export function useAuth() {
     setIsLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/login`, {
+      const apiBase = getApiBaseUrl();
+      const res = await fetch(`${apiBase}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username.trim(), password }),
@@ -101,7 +103,8 @@ export function useAuth() {
     setIsLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/register`, {
+      const apiBase = getApiBaseUrl();
+      const res = await fetch(`${apiBase}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username.trim(), password }),

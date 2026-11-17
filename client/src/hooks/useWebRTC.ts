@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Message, MessageType, PeerStream } from '../types';
+import { getApiBaseUrl } from '../utils/api';
 
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -45,12 +46,8 @@ export function useWebRTC({
     let isCancelled = false;
     const fetchIceConfig = async () => {
       try {
-        const url =
-          typeof window !== 'undefined' && (window.location.port === '8080' || window.location.port === '')
-            ? '/api/config/ice'
-            : 'http://localhost:8080/api/config/ice';
-
-        const res = await fetch(url).catch(() => fetch('/api/config/ice'));
+        const url = `${getApiBaseUrl()}/api/config/ice`;
+        const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
           const servers = Array.isArray(data) ? data : data.iceServers;

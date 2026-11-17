@@ -11,7 +11,6 @@ import {
   Signal,
   Users,
   LogOut,
-  LogIn,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Channel } from '../types';
@@ -28,9 +27,7 @@ interface ChannelSidebarProps {
   onLeaveCall?: () => void;
   isFriendsActive?: boolean;
   onSelectFriends?: () => void;
-  isAuthenticated?: boolean;
-  onLogout?: () => void;
-  onOpenAuth?: () => void;
+  onLogout: () => void;
 }
 
 export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
@@ -45,9 +42,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
   onLeaveCall,
   isFriendsActive = false,
   onSelectFriends,
-  isAuthenticated = false,
   onLogout,
-  onOpenAuth,
 }) => {
   const textChannels = channels.filter((c) => c.type !== 'voice');
   const voiceChannels = channels.filter((c) => c.type === 'voice');
@@ -241,7 +236,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
           <div className="truncate text-left leading-tight">
             <div className="text-sm font-semibold text-discord-heading truncate">{username}</div>
             <div className="text-[11px] text-discord-muted truncate capitalize">
-              {isAuthenticated ? 'Authenticated' : 'Guest'}
+              {connectionStatus === 'connected' ? 'Online' : connectionStatus}
             </div>
           </div>
         </div>
@@ -269,28 +264,15 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
             <Settings className="w-4 h-4" />
           </button>
 
-          {/* Logout or Login Button */}
-          {isAuthenticated ? (
-            <button
-              type="button"
-              onClick={onLogout}
-              className="p-1.5 hover:bg-discord-danger/20 hover:text-discord-danger rounded transition-colors"
-              title="Log Out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          ) : (
-            onOpenAuth && (
-              <button
-                type="button"
-                onClick={onOpenAuth}
-                className="p-1.5 hover:bg-discord-blurple/20 hover:text-discord-blurple rounded transition-colors"
-                title="Log In / Register"
-              >
-                <LogIn className="w-4 h-4" />
-              </button>
-            )
-          )}
+          {/* Logout Button */}
+          <button
+            type="button"
+            onClick={onLogout}
+            className="p-1.5 hover:bg-discord-danger/20 hover:text-discord-danger rounded transition-colors"
+            title="Log Out"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </div>

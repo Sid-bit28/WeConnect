@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Friend, FriendRequest } from '../types';
+import { getApiBaseUrl } from '../utils/api';
 
 interface FriendsViewProps {
   token: string | null;
@@ -22,8 +23,6 @@ interface FriendsViewProps {
 }
 
 type TabType = 'online' | 'all' | 'pending' | 'add';
-
-const API_BASE = 'http://localhost:8080';
 
 export const FriendsView: React.FC<FriendsViewProps> = ({
   token,
@@ -46,7 +45,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     if (!token) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/friends`, {
+      const res = await fetch(`${getApiBaseUrl()}/api/friends`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -101,7 +100,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
 
     setActionLoading('add');
     try {
-      const res = await fetch(`${API_BASE}/api/friends/request`, {
+      const res = await fetch(`${getApiBaseUrl()}/api/friends/request`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -129,7 +128,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     if (!token) return;
     setActionLoading(`accept-${fromUsername}`);
     try {
-      const res = await fetch(`${API_BASE}/api/friends/accept`, {
+      const res = await fetch(`${getApiBaseUrl()}/api/friends/accept`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -151,7 +150,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     if (!token) return;
     setActionLoading(`reject-${fromUsername}`);
     try {
-      const res = await fetch(`${API_BASE}/api/friends/reject`, {
+      const res = await fetch(`${getApiBaseUrl()}/api/friends/reject`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -176,7 +175,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     }
     setActionLoading(`remove-${friendUsername}`);
     try {
-      const res = await fetch(`${API_BASE}/api/friends/remove`, {
+      const res = await fetch(`${getApiBaseUrl()}/api/friends/remove`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -349,7 +348,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
 
             {!token && (
               <div className="mt-6 p-4 bg-discord-blurple/10 border border-discord-blurple/30 rounded-lg text-xs text-discord-text flex items-center justify-between">
-                <span>You are currently in guest mode. Log in or create an account to save friends.</span>
+                <span>Please log in to your account to send and manage friend requests.</span>
                 {onOpenAuth && (
                   <button
                     type="button"
