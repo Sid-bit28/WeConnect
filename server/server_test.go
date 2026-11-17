@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1025,5 +1026,285 @@ func TestTypingAndUnreadNotifications(t *testing.T) {
 	_ = charlieOtherWS.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
 	if _, raw, err := charlieOtherWS.ReadMessage(); err == nil {
 		t.Fatalf("charlie should NOT receive unread for dm:alice:bob, got %s", string(raw))
+	}
+}
+
+func doMultipartUpload(t *testing.T, handler http.Handler, fieldName, filename string, content []byte, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile(fieldName, filename)
+	if err != nil {
+		t.Fatalf("create form file failed: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write form file failed: %v", err)
+	}
+	_ = writer.Close()
+
+	req := httptest.NewRequest("POST", "/api/upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
+}
+
+func TestFileUploads(t *testing.T) {
+	t.Setenv("UPLOAD_DIR", t.TempDir())
+
+	hub := NewHub()
+	store, _ := NewStore("")
+	handler := setupRoutes(hub, store, "")
+
+	_, token, err := store.Register("alice", "password123")
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	// Minimal valid PNG header + bytes
+	pngBytes := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	}
+
+	// 1. Unauthenticated upload -> 401
+	w := doMultipartUpload(t, handler, "file", "pic.png", pngBytes, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated upload, got %d", w.Code)
+	}
+
+	// 2. Valid PNG image upload -> 201 + serves exact bytes + nosniff
+	w = doMultipartUpload(t, handler, "file", "screenshot.png", pngBytes, token)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for PNG upload, got %d (%s)", w.Code, w.Body.String())
+	}
+	var imgRes struct {
+		URL      string `json:"url"`
+		Name     string `json:"name"`
+		Size     int64  `json:"size"`
+		MimeType string `json:"mimeType"`
+		IsImage  bool   `json:"isImage"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &imgRes); err != nil {
+		t.Fatalf("decode upload response failed: %v", err)
+	}
+	if !imgRes.IsImage || imgRes.MimeType != "image/png" || imgRes.Name != "screenshot.png" || imgRes.Size != int64(len(pngBytes)) {
+		t.Fatalf("unexpected image upload response: %+v", imgRes)
+	}
+
+	getReq := httptest.NewRequest("GET", imgRes.URL, nil)
+	getW := httptest.NewRecorder()
+	handler.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("expected 200 serving uploaded image, got %d", getW.Code)
+	}
+	if getW.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("expected X-Content-Type-Options: nosniff")
+	}
+	if !bytes.Equal(getW.Body.Bytes(), pngBytes) {
+		t.Fatalf("served image bytes did not match uploaded bytes")
+	}
+
+	// 3. Valid PDF document upload -> 201 + Content-Disposition: attachment + nosniff
+	pdfBytes := []byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n")
+	w = doMultipartUpload(t, handler, "file", "spec.pdf", pdfBytes, token)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for PDF upload, got %d (%s)", w.Code, w.Body.String())
+	}
+	var docRes struct {
+		URL      string `json:"url"`
+		Name     string `json:"name"`
+		MimeType string `json:"mimeType"`
+		IsImage  bool   `json:"isImage"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &docRes)
+	if docRes.IsImage || docRes.MimeType != "application/pdf" {
+		t.Fatalf("unexpected doc upload response: %+v", docRes)
+	}
+
+	getDocReq := httptest.NewRequest("GET", docRes.URL, nil)
+	getDocW := httptest.NewRecorder()
+	handler.ServeHTTP(getDocW, getDocReq)
+	if getDocW.Code != http.StatusOK {
+		t.Fatalf("expected 200 serving uploaded PDF, got %d", getDocW.Code)
+	}
+	if getDocW.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("expected nosniff header on document")
+	}
+	if !strings.Contains(getDocW.Header().Get("Content-Disposition"), "attachment") {
+		t.Fatalf("expected Content-Disposition attachment for non-image, got %q", getDocW.Header().Get("Content-Disposition"))
+	}
+	if !bytes.Equal(getDocW.Body.Bytes(), pdfBytes) {
+		t.Fatalf("served PDF bytes did not match uploaded bytes")
+	}
+
+	// 4. Dangerous extension rejected -> 400
+	for _, badFile := range []string{"evil.sh", "payload.exe", "xss.html", "script.js"} {
+		w = doMultipartUpload(t, handler, "file", badFile, []byte("hello"), token)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for blocked file %s, got %d", badFile, w.Code)
+		}
+	}
+
+	// 5. Oversized file (>10MB) rejected -> 413
+	oversized := bytes.Repeat([]byte("A"), maxUploadSize+1024)
+	w = doMultipartUpload(t, handler, "file", "huge.txt", oversized, token)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized file, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// 6. Path traversal attempts rejected -> 400
+	for _, badPath := range []string{
+		"/api/uploads/..%2F..%2Fetc%2Fpasswd",
+		"/api/uploads/foo..bar.txt",
+		"/api/uploads/sub/file.txt",
+	} {
+		req := httptest.NewRequest("GET", badPath, nil)
+		rw := httptest.NewRecorder()
+		handler.ServeHTTP(rw, req)
+		if rw.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for traversal path %s, got %d", badPath, rw.Code)
+		}
+	}
+
+	// 7. Missing file -> 404
+	missingReq := httptest.NewRequest("GET", "/api/uploads/nonexistent12345.png", nil)
+	missingW := httptest.NewRecorder()
+	handler.ServeHTTP(missingW, missingReq)
+	if missingW.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing upload, got %d", missingW.Code)
+	}
+}
+
+func TestGifSearchEndpoint(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	handler := setupRoutes(hub, store, "")
+
+	_, token, _ := store.Register("alice", "password123")
+
+	// Unauthenticated -> 401
+	w := doJSONRequest(handler, "GET", "/api/gifs?q=wave", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /api/gifs, got %d", w.Code)
+	}
+
+	// Authenticated default list -> 200 curated
+	w = doJSONRequest(handler, "GET", "/api/gifs", nil, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/gifs, got %d", w.Code)
+	}
+	var gifRes struct {
+		Gifs   []GifItem `json:"gifs"`
+		Source string    `json:"source"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &gifRes); err != nil {
+		t.Fatalf("decode gifs failed: %v", err)
+	}
+	if len(gifRes.Gifs) == 0 || gifRes.Source != "curated" {
+		t.Fatalf("expected curated gifs, got %+v", gifRes)
+	}
+
+	// Filtered query
+	w = doJSONRequest(handler, "GET", "/api/gifs?q=coffee", nil, token)
+	_ = json.Unmarshal(w.Body.Bytes(), &gifRes)
+	if len(gifRes.Gifs) == 0 || !strings.Contains(strings.ToLower(gifRes.Gifs[0].Title), "coffee") {
+		t.Fatalf("expected coffee gif match, got %+v", gifRes.Gifs)
+	}
+}
+
+func TestRichMessagePersistence(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+	_, aliceToken, _ := store.Register("alice", "password123")
+	_, bobToken, _ := store.Register("bob", "password123")
+
+	aliceWS := connectWS(t, server.URL, "random", aliceToken)
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	// 1. Attachment-only chat message (empty Content, non-nil Data)
+	attData := map[string]any{
+		"attachment": map[string]any{
+			"url":      "/api/uploads/abc123.png",
+			"name":     "diagram.png",
+			"size":     float64(2048),
+			"mimeType": "image/png",
+			"isImage":  true,
+		},
+	}
+	if err := aliceWS.WriteJSON(Message{Type: "chat", Content: "", Data: attData}); err != nil {
+		t.Fatalf("write attachment msg failed: %v", err)
+	}
+	attEcho := readNextMessage(t, aliceWS, 2*time.Second)
+	if attEcho.ID == "" || attEcho.Type != "chat" || attEcho.Data == nil {
+		t.Fatalf("expected chat echo with generated ID and data, got %+v", attEcho)
+	}
+
+	// 2. Sticker-only chat message
+	stickerData := map[string]any{
+		"sticker": map[string]any{
+			"id":       "wave",
+			"label":    "Wave",
+			"category": "greetings",
+		},
+	}
+	if err := aliceWS.WriteJSON(Message{Type: "chat", Content: "", Data: stickerData}); err != nil {
+		t.Fatalf("write sticker msg failed: %v", err)
+	}
+	stickerEcho := readNextMessage(t, aliceWS, 2*time.Second)
+	if stickerEcho.ID == "" || stickerEcho.ID == attEcho.ID {
+		t.Fatalf("expected distinct generated ID for sticker message, got %+v", stickerEcho)
+	}
+
+	// 3. Verify GET /api/messages returns both rich messages with ID and Data intact
+	w := doJSONRequest(handler, "GET", "/api/messages?room=random&limit=50", nil, bobToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/messages, got %d", w.Code)
+	}
+	var hist struct {
+		Messages []Message `json:"messages"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &hist); err != nil {
+		t.Fatalf("decode messages failed: %v", err)
+	}
+	if len(hist.Messages) != 2 {
+		t.Fatalf("expected 2 rich persisted messages, got %d", len(hist.Messages))
+	}
+	if hist.Messages[0].ID != attEcho.ID || hist.Messages[0].Data == nil {
+		t.Fatalf("first message ID/Data mismatch: %+v", hist.Messages[0])
+	}
+	if hist.Messages[1].ID != stickerEcho.ID || hist.Messages[1].Data == nil {
+		t.Fatalf("second message ID/Data mismatch: %+v", hist.Messages[1])
+	}
+
+	// 4. Verify DM sticker-only message sends clean rich preview on unread notification
+	bobWS := connectWS(t, server.URL, "voice-lounge", bobToken)
+	defer bobWS.Close()
+	_ = readNextMessage(t, bobWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobWS, 2*time.Second) // users
+
+	aliceDMWS := connectWS(t, server.URL, "dm:alice:bob", aliceToken)
+	defer aliceDMWS.Close()
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second) // users
+
+	if err := aliceDMWS.WriteJSON(Message{Type: "chat", Content: "", Data: stickerData}); err != nil {
+		t.Fatalf("write dm sticker failed: %v", err)
+	}
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second)
+	bobUnread := readNextMessage(t, bobWS, 2*time.Second)
+	if bobUnread.Type != "unread" || bobUnread.Content != "Sent sticker: Wave" {
+		t.Fatalf("expected rich DM unread preview 'Sent sticker: Wave', got %+v", bobUnread)
 	}
 }

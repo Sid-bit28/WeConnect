@@ -680,6 +680,15 @@ func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
 	mux.HandleFunc("/api/channels", channelsHandler(store, hub))
 	mux.HandleFunc("/api/messages", messagesHandler(store))
 
+	// Uploads & GIF endpoints
+	uploadDir := strings.TrimSpace(os.Getenv("UPLOAD_DIR"))
+	if uploadDir == "" {
+		uploadDir = "./data/uploads"
+	}
+	mux.HandleFunc("/api/upload", uploadHandler(store, uploadDir))
+	mux.HandleFunc("/api/uploads/", serveUploadHandler(uploadDir))
+	mux.HandleFunc("/api/gifs", gifSearchHandler(store))
+
 	// Single-Port SPA serving
 	mux.HandleFunc("/", spaHandler(staticDir))
 
@@ -748,6 +757,15 @@ func main() {
 	if staticDir != "" {
 		log.Printf("[Server] Single-port SPA static file serving enabled from %s", staticDir)
 	}
+
+	uploadDir := strings.TrimSpace(os.Getenv("UPLOAD_DIR"))
+	if uploadDir == "" {
+		uploadDir = "./data/uploads"
+	}
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		log.Fatalf("[Server] Failed to create upload directory %s: %v", uploadDir, err)
+	}
+	log.Printf("[Server] Upload storage ready at %s", uploadDir)
 
 	hub := NewHub()
 	hub.SetStore(store)

@@ -545,6 +545,9 @@ func (s *FileStore) GetFriends(username string, isOnline func(string) bool) Frie
 
 // SaveMessage appends a chat message to history.
 func (s *FileStore) SaveMessage(msg Message) error {
+	if msg.ID == "" {
+		msg.ID = generateMessageID()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data.Messages = append(s.data.Messages, msg)

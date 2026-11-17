@@ -82,6 +82,7 @@ func (p *PostgresStore) autoMigrate(ctx context.Context) error {
 
 	CREATE TABLE IF NOT EXISTS messages (
 		id BIGSERIAL PRIMARY KEY,
+		msg_id TEXT,
 		type TEXT NOT NULL,
 		room TEXT NOT NULL,
 		sender TEXT NOT NULL,
@@ -90,7 +91,11 @@ func (p *PostgresStore) autoMigrate(ctx context.Context) error {
 		timestamp BIGINT NOT NULL
 	);
 
+	ALTER TABLE messages ADD COLUMN IF NOT EXISTS msg_id TEXT;
+	ALTER TABLE messages ADD COLUMN IF NOT EXISTS data JSONB;
+
 	CREATE INDEX IF NOT EXISTS idx_messages_room_timestamp ON messages(room, timestamp DESC);
+	CREATE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id);
 
 	CREATE TABLE IF NOT EXISTS channels (
 		id TEXT PRIMARY KEY,
@@ -426,6 +431,10 @@ func (p *PostgresStore) GetFriends(username string, isOnline func(string) bool) 
 }
 
 func (p *PostgresStore) SaveMessage(msg Message) error {
+	if msg.ID == "" {
+		msg.ID = generateMessageID()
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -435,8 +444,8 @@ func (p *PostgresStore) SaveMessage(msg Message) error {
 	}
 
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO messages (type, room, sender, content, data, timestamp) VALUES ($1, $2, $3, $4, $5, $6)`,
-		msg.Type, msg.Room, msg.Sender, msg.Content, dataBytes, msg.Timestamp,
+		`INSERT INTO messages (msg_id, type, room, sender, content, data, timestamp) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		msg.ID, msg.Type, msg.Room, msg.Sender, msg.Content, dataBytes, msg.Timestamp,
 	)
 	return err
 }
@@ -450,7 +459,11 @@ func (p *PostgresStore) GetMessages(room string, limit int) ([]Message, error) {
 	defer cancel()
 
 	rows, err := p.pool.Query(ctx,
-		`SELECT type, room, sender, content, data, timestamp FROM messages WHERE room = $1 ORDER BY timestamp DESC LIMIT $2`,
+		`SELECT COALESCE(msg_id, ''), type, room, sender, COALESCE(content, ''), data, timestamp
+		 FROM messages
+		 WHERE room = $1
+		 ORDER BY timestamp DESC, id DESC
+		 LIMIT $2`,
 		room, limit,
 	)
 	if err != nil {
@@ -462,7 +475,7 @@ func (p *PostgresStore) GetMessages(room string, limit int) ([]Message, error) {
 	for rows.Next() {
 		var m Message
 		var dataBytes []byte
-		if err := rows.Scan(&m.Type, &m.Room, &m.Sender, &m.Content, &dataBytes, &m.Timestamp); err != nil {
+		if err := rows.Scan(&m.ID, &m.Type, &m.Room, &m.Sender, &m.Content, &dataBytes, &m.Timestamp); err != nil {
 			continue
 		}
 		if len(dataBytes) > 0 {

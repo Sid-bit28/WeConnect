@@ -10,7 +10,7 @@ import { NotificationToast, type NotificationItem } from './components/Notificat
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
-import type { Channel, Message, AuthUser, Friend } from './types';
+import type { Channel, Message, MessageData, AuthUser, Friend } from './types';
 import { getApiBaseUrl } from './utils/api';
 import { isDmRoom, getDmPeerUsername } from './utils/dm';
 import { playNotificationChime } from './utils/sound';
@@ -285,9 +285,9 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     }
   }, [webrtc.isInCall]);
 
-  const handleSendMessage = (content: string) => {
+  const handleSendMessage = (content: string, data?: MessageData) => {
     requestNotificationPermissionOnce();
-    send('chat', content);
+    send('chat', content, data);
   };
 
   const handleChannelSelect = (channelId: string) => {
@@ -467,6 +467,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             channelName={activeDisplayName}
             channelType={activeIsDm ? 'text' : activeChannel.type}
             channelTopic={activeIsDm ? undefined : activeChannel.topic}
+            token={token}
             isDm={activeIsDm}
             isLoadingHistory={isLoadingHistory}
             messages={messages}

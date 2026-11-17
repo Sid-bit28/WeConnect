@@ -12,7 +12,38 @@ export type MessageType =
   | "unread"
   | "channel_update";
 
+export interface Attachment {
+  url: string;
+  name: string;
+  size: number;
+  mimeType: string;
+  isImage: boolean;
+}
+
+export interface StickerData {
+  id: string;
+  label: string;
+  category: string;
+}
+
+export interface GifData {
+  url: string;
+  title: string;
+}
+
+export interface MessageData {
+  attachment?: Attachment;
+  attachments?: Attachment[];
+  sticker?: StickerData;
+  gif?: GifData;
+  replyTo?: any;
+  reactions?: Record<string, string[]>;
+  edited?: boolean;
+  [key: string]: any;
+}
+
 export interface Message {
+  id?: string;
   type: MessageType;
   room: string;
   sender: string;

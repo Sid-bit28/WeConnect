@@ -9,14 +9,33 @@ import {
   RefreshCw,
   AtSign,
   Loader2,
+  Paperclip,
+  Smile,
+  FileText,
+  Download,
+  X,
+  Upload,
 } from 'lucide-react';
 import clsx from 'clsx';
-import type { Message, ConnectionStatus } from '../types';
+import type {
+  Message,
+  MessageData,
+  ConnectionStatus,
+  Attachment,
+  StickerData,
+  GifData,
+} from '../types';
+import { getApiBaseUrl } from '../utils/api';
+import { MarkdownContent } from '../utils/markdown';
+import { getStickerById, getStickerSvgDataUri } from '../utils/stickers';
+import { ImageLightbox } from './ImageLightbox';
+import { ExpressionPicker } from './ExpressionPicker';
 
 interface ChatAreaProps {
   channelName: string;
   channelType?: 'text' | 'voice';
   channelTopic?: string;
+  token: string;
   isDm?: boolean;
   isLoadingHistory?: boolean;
   messages: Message[];
@@ -27,7 +46,7 @@ interface ChatAreaProps {
   isCallViewActive?: boolean;
   memberCount?: number;
   typingUsers?: string[];
-  onSendMessage: (content: string) => void;
+  onSendMessage: (content: string, data?: MessageData) => void;
   onTyping?: (isTyping: boolean) => void;
   onReconnect?: () => void;
   onToggleUserList?: () => void;
@@ -39,11 +58,37 @@ interface ChatAreaProps {
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const TYPING_THROTTLE_MS = 1500;
 const TYPING_IDLE_MS = 2500;
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10MB
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function getFileExtensionLabel(name: string, mimeType: string): string {
+  const parts = name.split('.');
+  if (parts.length > 1) {
+    return parts[parts.length - 1].slice(0, 6).toUpperCase();
+  }
+  const mimePart = mimeType.split('/')[1];
+  return (mimePart || 'FILE').slice(0, 6).toUpperCase();
+}
+
+function resolveMediaUrl(url: string): string {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) {
+    return url;
+  }
+  return `${getApiBaseUrl()}${url}`;
+}
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
   channelName,
   channelType = 'text',
   channelTopic,
+  token,
   isDm = false,
   isLoadingHistory = false,
   messages,
@@ -63,7 +108,17 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   showUserList = true,
 }) => {
   const [inputText, setInputText] = useState('');
+  const [pendingAttachment, setPendingAttachment] = useState<Attachment | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepthRef = useRef<number>(0);
   const lastTypingEmitRef = useRef<number>(0);
   const typingIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isCurrentlyTypingRef = useRef<boolean>(false);
@@ -72,8 +127,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Clear typing timers on channel switch or unmount
+  // Clear typing timers and pending upload state on channel switch or unmount
   useEffect(() => {
+    setUploadError(null);
     return () => {
       if (typingIdleTimeoutRef.current) {
         clearTimeout(typingIdleTimeoutRef.current);
@@ -124,6 +180,106 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }, TYPING_IDLE_MS);
   };
 
+  const uploadFile = async (file: File) => {
+    setUploadError(null);
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError('File exceeds the 10MB upload limit.');
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch(`${getApiBaseUrl()}/api/upload`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setUploadError(data.error || data.message || `Upload failed (${res.status}).`);
+        return;
+      }
+
+      const attachment: Attachment = {
+        url: data.url,
+        name: data.name || file.name,
+        size: typeof data.size === 'number' ? data.size : file.size,
+        mimeType: data.mimeType || file.type || 'application/octet-stream',
+        isImage: Boolean(data.isImage),
+      };
+
+      setPendingAttachment(attachment);
+      inputRef.current?.focus();
+    } catch (err: any) {
+      setUploadError(err?.message || 'Network error while uploading file.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      void uploadFile(file);
+    }
+    e.target.value = '';
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          void uploadFile(file);
+          return;
+        }
+      }
+    }
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('Files')) {
+      dragDepthRef.current += 1;
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragging(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDragging(false);
+    if (connectionStatus !== 'connected') return;
+
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      void uploadFile(file);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -133,10 +289,34 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const handleSubmit = () => {
     const trimmed = inputText.trim();
-    if (!trimmed) return;
+    if (!trimmed && !pendingAttachment) return;
+    if (connectionStatus !== 'connected') return;
+
     stopTypingSignal();
-    onSendMessage(trimmed);
+    const data: MessageData | undefined = pendingAttachment
+      ? { attachment: pendingAttachment }
+      : undefined;
+    onSendMessage(trimmed, data);
     setInputText('');
+    setPendingAttachment(null);
+    setUploadError(null);
+  };
+
+  const handleSelectEmoji = (emoji: string) => {
+    setInputText((prev) => prev + emoji);
+    inputRef.current?.focus();
+  };
+
+  const handleSelectSticker = (sticker: StickerData) => {
+    if (connectionStatus !== 'connected') return;
+    stopTypingSignal();
+    onSendMessage('', { sticker });
+  };
+
+  const handleSelectGif = (gif: GifData) => {
+    if (connectionStatus !== 'connected') return;
+    stopTypingSignal();
+    onSendMessage('', { gif });
   };
 
   const formatTypingText = (users: string[]) => {
@@ -170,8 +350,143 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     return styles[Math.abs(hash) % styles.length];
   };
 
+  const renderMessageRichBody = (msg: Message) => {
+    const data = (msg.data || {}) as MessageData;
+    const attachments: Attachment[] = [];
+    if (data.attachment) attachments.push(data.attachment);
+    if (Array.isArray(data.attachments)) attachments.push(...data.attachments);
+
+    const stickerDef = data.sticker?.id ? getStickerById(data.sticker.id) : undefined;
+    const gif = data.gif;
+
+    return (
+      <div className="space-y-2 mt-0.5">
+        {/* Markdown Text */}
+        {msg.content && (
+          <div className="text-sm text-text-primary/90 break-words leading-relaxed">
+            <MarkdownContent content={msg.content} />
+          </div>
+        )}
+
+        {/* Vector Sticker */}
+        {stickerDef && (
+          <div className="pt-0.5">
+            <img
+              src={getStickerSvgDataUri(stickerDef)}
+              alt={stickerDef.label}
+              title={stickerDef.label}
+              className="w-28 h-28 object-contain select-none"
+            />
+          </div>
+        )}
+
+        {/* GIF */}
+        {gif?.url && (
+          <div className="pt-0.5">
+            <button
+              type="button"
+              onClick={() => setLightboxImage({ src: gif.url, alt: gif.title || 'GIF' })}
+              className="block rounded-xl overflow-hidden border border-white/[0.08] hover:border-accent/40 transition-colors bg-surface max-w-xs cursor-zoom-in"
+            >
+              <img
+                src={gif.url}
+                alt={gif.title || 'GIF'}
+                loading="lazy"
+                className="max-h-60 w-auto object-contain"
+              />
+            </button>
+          </div>
+        )}
+
+        {/* File & Image Attachments */}
+        {attachments.map((att, idx) => {
+          const resolvedUrl = resolveMediaUrl(att.url);
+          if (att.isImage) {
+            return (
+              <div key={`${att.url}-${idx}`} className="pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => setLightboxImage({ src: resolvedUrl, alt: att.name })}
+                  className="block rounded-xl overflow-hidden border border-white/[0.08] hover:border-accent/40 transition-colors bg-surface max-w-sm cursor-zoom-in"
+                >
+                  <img
+                    src={resolvedUrl}
+                    alt={att.name}
+                    loading="lazy"
+                    className="max-h-72 w-auto object-contain"
+                  />
+                </button>
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={`${att.url}-${idx}`}
+              className="flex items-center justify-between space-x-3 p-3 rounded-xl bg-surface border border-white/[0.08] max-w-sm"
+            >
+              <div className="flex items-center space-x-3 min-w-0">
+                <div className="w-9 h-9 rounded-lg bg-accent-muted border border-accent/20 flex items-center justify-center flex-shrink-0 text-accent">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-text-primary truncate" title={att.name}>
+                    {att.name}
+                  </div>
+                  <div className="flex items-center space-x-1.5 text-[10px] text-text-muted mt-0.5">
+                    <span className="px-1.5 py-0.2 rounded bg-card border border-white/[0.06] font-mono text-text-secondary">
+                      {getFileExtensionLabel(att.name, att.mimeType)}
+                    </span>
+                    <span>{formatFileSize(att.size)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <a
+                href={resolvedUrl}
+                download={att.name}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-2 rounded-lg bg-card hover:bg-accent text-text-secondary hover:text-white transition-colors flex-shrink-0"
+                title={`Download ${att.name}`}
+              >
+                <Download className="w-3.5 h-3.5" />
+              </a>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const canSend =
+    connectionStatus === 'connected' &&
+    !isUploading &&
+    (Boolean(inputText.trim()) || Boolean(pendingAttachment));
+
   return (
-    <div className="flex-1 flex flex-col bg-canvas h-full min-w-0">
+    <div
+      className="flex-1 flex flex-col bg-canvas h-full min-w-0 relative"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag & Drop Upload Overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-40 bg-canvas/85 backdrop-blur-sm border-2 border-dashed border-accent/70 m-3 rounded-2xl flex flex-col items-center justify-center pointer-events-none select-none">
+          <div className="w-12 h-12 rounded-2xl bg-accent/15 border border-accent/30 flex items-center justify-center mb-3 text-accent">
+            <Upload className="w-5 h-5" />
+          </div>
+          <div className="text-sm font-semibold text-text-primary">
+            Drop file to upload
+          </div>
+          <div className="text-xs text-text-muted mt-1">
+            Images, PDFs, and documents up to 10MB
+          </div>
+        </div>
+      )}
+
       {/* Refined Minimal Channel Header */}
       <header className="h-14 border-b border-white/[0.07] px-6 flex items-center justify-between bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0">
         <div className="flex items-center space-x-2.5 min-w-0">
@@ -303,8 +618,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </h3>
             <p className="text-xs text-text-secondary leading-relaxed">
               {isDm
-                ? `This is the start of your private conversation with @${channelName}. Send a message or start a 1-on-1 call.`
-                : 'This is the start of the conversation. Send a message below or launch a live call.'}
+                ? `This is the start of your private conversation with @${channelName}. Send a message, drop a file, or start a 1-on-1 call.`
+                : 'This is the start of the conversation. Send a message, paste an image, or launch a live call.'}
             </p>
           </div>
         ) : (
@@ -317,10 +632,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 msg.type === 'call-join' ||
                 msg.type === 'call-leave';
 
+              const msgKey = msg.id || `${msg.timestamp || index}-${msg.sender}-${index}`;
+
               if (isSystem) {
                 return (
                   <div
-                    key={`${msg.timestamp || index}-${msg.sender}`}
+                    key={msgKey}
                     className="flex items-center space-x-2 py-1.5 px-2 text-[11px] text-text-muted select-none"
                   >
                     <span
@@ -344,7 +661,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 );
               }
 
-              // Check if consecutive message from the same sender within 5 minutes
               const prevMsg = index > 0 ? messages[index - 1] : null;
               const prevIsNormal =
                 prevMsg &&
@@ -366,22 +682,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               if (isGrouped) {
                 return (
                   <div
-                    key={`${msg.timestamp || index}-${msg.sender}`}
+                    key={msgKey}
                     className="flex items-baseline pl-[44px] pr-3 py-0.5 -mx-2 rounded-lg hover:bg-surface/60 transition-colors group relative"
                   >
-                    <span className="absolute left-2 text-[10px] text-text-muted opacity-0 group-hover:opacity-100 transition-opacity select-none w-8 text-right">
+                    <span className="absolute left-2 top-1 text-[10px] text-text-muted opacity-0 group-hover:opacity-100 transition-opacity select-none w-8 text-right">
                       {formatTimestamp(msg.timestamp)}
                     </span>
-                    <div className="text-sm text-text-primary/90 break-words whitespace-pre-wrap leading-relaxed">
-                      {msg.content}
-                    </div>
+                    <div className="flex-1 min-w-0">{renderMessageRichBody(msg)}</div>
                   </div>
                 );
               }
 
               return (
                 <div
-                  key={`${msg.timestamp || index}-${msg.sender}`}
+                  key={msgKey}
                   className="flex items-start space-x-3 pt-3 pb-0.5 px-2 -mx-2 rounded-lg hover:bg-surface/60 transition-colors group"
                 >
                   {/* Minimal Avatar */}
@@ -410,9 +724,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       </span>
                     </div>
 
-                    <div className="text-sm text-text-primary/90 break-words mt-0.5 whitespace-pre-wrap leading-relaxed">
-                      {msg.content}
-                    </div>
+                    {renderMessageRichBody(msg)}
                   </div>
                 </div>
               );
@@ -422,53 +734,171 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Floating Rounded Input Bar + Typing Indicator */}
+      {/* Composer Area: Typing Indicator + Pending Attachment + Input Bar */}
       <div className="px-6 pb-5 pt-1 flex-shrink-0">
-        {/* Subtle Typing Indicator */}
-        <div className="h-5 max-w-4xl px-1 flex items-center">
-          {typingUsers.length > 0 && (
-            <div className="flex items-center space-x-2 text-[11px] text-text-secondary select-none">
-              <span className="flex space-x-0.5">
-                <span className="w-1 h-1 rounded-full bg-accent animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-1 h-1 rounded-full bg-accent animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-1 h-1 rounded-full bg-accent animate-bounce" />
-              </span>
-              <span className="font-medium">{formatTypingText(typingUsers)}</span>
+        <div className="max-w-4xl relative">
+          {/* Upload Error Banner */}
+          {uploadError && (
+            <div className="mb-2 px-3 py-2 rounded-xl bg-danger-muted border border-danger/25 text-xs text-danger flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>{uploadError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUploadError(null)}
+                className="p-0.5 rounded hover:bg-danger/20"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
-        </div>
 
-        <div className="max-w-4xl bg-surface border border-white/[0.08] focus-within:border-accent/60 rounded-xl px-4 py-2 flex items-center space-x-3 transition-colors shadow-sm">
-          <input
-            type="text"
-            value={inputText}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              isDm
-                ? `Message @${channelName}...`
-                : `Message ${channelType === 'voice' ? '' : '#'}${channelName}...`
-            }
-            disabled={connectionStatus !== 'connected'}
-            className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50"
+          {/* Pending Attachment Chip */}
+          {(pendingAttachment || isUploading) && (
+            <div className="mb-2 flex items-center">
+              {isUploading ? (
+                <div className="inline-flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-surface border border-white/[0.08] text-xs text-text-secondary">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
+                  <span>Uploading file...</span>
+                </div>
+              ) : (
+                pendingAttachment && (
+                  <div className="inline-flex items-center space-x-2.5 px-2.5 py-1.5 rounded-xl bg-surface border border-accent/35 text-xs text-text-primary max-w-xs">
+                    {pendingAttachment.isImage ? (
+                      <img
+                        src={resolveMediaUrl(pendingAttachment.url)}
+                        alt={pendingAttachment.name}
+                        className="w-7 h-7 rounded-md object-cover border border-white/[0.08] flex-shrink-0"
+                      />
+                    ) : (
+                      <div className="w-7 h-7 rounded-md bg-accent-muted flex items-center justify-center text-accent flex-shrink-0">
+                        <FileText className="w-3.5 h-3.5" />
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-[11px]">{pendingAttachment.name}</div>
+                      <div className="text-[10px] text-text-muted">
+                        {formatFileSize(pendingAttachment.size)}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPendingAttachment(null)}
+                      className="p-1 rounded-md text-text-muted hover:text-danger hover:bg-danger-muted transition-colors flex-shrink-0"
+                      title="Remove attachment"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )
+              )}
+            </div>
+          )}
+
+          {/* Subtle Typing Indicator */}
+          <div className="h-5 px-1 flex items-center">
+            {typingUsers.length > 0 && (
+              <div className="flex items-center space-x-2 text-[11px] text-text-secondary select-none">
+                <span className="flex space-x-0.5">
+                  <span className="w-1 h-1 rounded-full bg-accent animate-bounce [animation-delay:-0.3s]" />
+                  <span className="w-1 h-1 rounded-full bg-accent animate-bounce [animation-delay:-0.15s]" />
+                  <span className="w-1 h-1 rounded-full bg-accent animate-bounce" />
+                </span>
+                <span className="font-medium">{formatTypingText(typingUsers)}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Expression Picker Popover (Emoji / Stickers / GIFs) */}
+          <ExpressionPicker
+            isOpen={isPickerOpen}
+            token={token}
+            onClose={() => setIsPickerOpen(false)}
+            onSelectEmoji={handleSelectEmoji}
+            onSelectSticker={handleSelectSticker}
+            onSelectGif={handleSelectGif}
           />
 
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!inputText.trim() || connectionStatus !== 'connected'}
-            className={clsx(
-              'w-7 h-7 rounded-lg flex items-center justify-center transition-all flex-shrink-0',
-              inputText.trim() && connectionStatus === 'connected'
-                ? 'bg-accent text-white hover:bg-accent-hover cursor-pointer shadow-sm'
-                : 'bg-card text-text-muted opacity-40 cursor-not-allowed'
-            )}
-            title="Send"
-          >
-            <ArrowUp className="w-4 h-4" />
-          </button>
+          {/* Hidden File Input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            onChange={handleFileInputChange}
+            className="hidden"
+          />
+
+          {/* Floating Rounded Input Bar */}
+          <div className="bg-surface border border-white/[0.08] focus-within:border-accent/60 rounded-xl px-3 py-2 flex items-center space-x-2 transition-colors shadow-sm">
+            {/* Upload Button */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={connectionStatus !== 'connected' || isUploading}
+              className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-card disabled:opacity-40 transition-colors flex-shrink-0"
+              title="Upload image or document (max 10MB)"
+            >
+              <Paperclip className="w-4 h-4" />
+            </button>
+
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputText}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={
+                isDm
+                  ? `Message @${channelName}...`
+                  : `Message ${channelType === 'voice' ? '' : '#'}${channelName}...`
+              }
+              disabled={connectionStatus !== 'connected'}
+              className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50 px-1"
+            />
+
+            {/* Emoji / Stickers / GIFs Trigger */}
+            <button
+              type="button"
+              onClick={() => setIsPickerOpen((prev) => !prev)}
+              disabled={connectionStatus !== 'connected'}
+              className={clsx(
+                'p-1.5 rounded-lg transition-colors flex-shrink-0 disabled:opacity-40',
+                isPickerOpen
+                  ? 'bg-card text-accent'
+                  : 'text-text-muted hover:text-text-primary hover:bg-card'
+              )}
+              title="Emoji, Stickers & GIFs"
+            >
+              <Smile className="w-4 h-4" />
+            </button>
+
+            {/* Send Button */}
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!canSend}
+              className={clsx(
+                'w-7 h-7 rounded-lg flex items-center justify-center transition-all flex-shrink-0',
+                canSend
+                  ? 'bg-accent text-white hover:bg-accent-hover cursor-pointer shadow-sm'
+                  : 'bg-card text-text-muted opacity-40 cursor-not-allowed'
+              )}
+              title="Send"
+            >
+              <ArrowUp className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Image Lightbox Modal */}
+      <ImageLightbox
+        src={lightboxImage?.src || null}
+        alt={lightboxImage?.alt}
+        onClose={() => setLightboxImage(null)}
+      />
     </div>
   );
 };

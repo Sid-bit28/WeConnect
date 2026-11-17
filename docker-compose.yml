@@ -30,10 +30,15 @@ services:
       PORT: 8080
       DATABASE_URL: postgres://weconnect:weconnect_password@postgres:5432/weconnect_db?sslmode=disable
       STATIC_DIR: /app/static
+      UPLOAD_DIR: /app/data/uploads
+    volumes:
+      - uploads:/app/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   pgdata:
+    driver: local
+  uploads:
     driver: local

@@ -11,6 +11,7 @@ interface UseSocketOptions {
 }
 
 function getMessageKey(msg: Message): string {
+  if (msg.id) return `id:${msg.id}`;
   return `${msg.type}|${msg.sender}|${msg.timestamp || 0}|${msg.content || ''}`;
 }
 

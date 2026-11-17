@@ -12,11 +12,12 @@ import (
 
 // Message defines the WebSocket JSON protocol payload.
 type Message struct {
-	Type      string `json:"type"` // "chat" | "join" | "leave" | "users" | "signal" | "error" | "friend_update"
+	ID        string `json:"id,omitempty"`
+	Type      string `json:"type"` // "chat" | "join" | "leave" | "users" | "signal" | "error" | "friend_update" | "typing" | "unread" | "channel_update"
 	Room      string `json:"room,omitempty"`
 	Sender    string `json:"sender"`
 	Content   string `json:"content,omitempty"`
-	Data      any    `json:"data,omitempty"`      // WebRTC signaling payload, user list, or friend update details
+	Data      any    `json:"data,omitempty"`      // WebRTC signaling payload, user list, attachments, stickers, GIFs, or updates
 	Timestamp int64  `json:"timestamp,omitempty"` // Milliseconds Unix timestamp
 }
 

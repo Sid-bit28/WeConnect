@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -147,8 +149,11 @@ func (c *Client) readPump() {
 			c.hub.BroadcastToRoom(c.room, msg)
 
 		case "chat":
-			if strings.TrimSpace(msg.Content) == "" {
+			if strings.TrimSpace(msg.Content) == "" && msg.Data == nil {
 				continue
+			}
+			if strings.TrimSpace(msg.ID) == "" {
+				msg.ID = generateMessageID()
 			}
 			if store := c.hub.getStore(); store != nil {
 				if err := store.SaveMessage(msg); err != nil {
@@ -166,7 +171,11 @@ func (c *Client) readPump() {
 			}
 			if strings.HasPrefix(c.room, "dm:") {
 				if otherPeer := getDmOtherPeer(c.room, c.username); otherPeer != "" {
-					unreadMsg.Content = truncatePreview(msg.Content, 100)
+					if strings.TrimSpace(msg.Content) != "" {
+						unreadMsg.Content = truncatePreview(msg.Content, 100)
+					} else {
+						unreadMsg.Content = deriveRichPreview(msg.Data)
+					}
 					c.hub.NotifyUserIfNotInRoom(otherPeer, c.room, unreadMsg)
 				}
 			} else {
@@ -250,4 +259,49 @@ func truncatePreview(s string, maxRunes int) string {
 		return string(runes[:maxRunes])
 	}
 	return string(runes[:maxRunes-1]) + "…"
+}
+
+// generateMessageID produces a random 16-character hex message identifier.
+func generateMessageID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("msg-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// deriveRichPreview builds a human-readable notification preview for attachment/sticker/GIF messages.
+func deriveRichPreview(data any) string {
+	m, ok := data.(map[string]any)
+	if !ok || m == nil {
+		return "Sent an attachment"
+	}
+	if sticker, ok := m["sticker"].(map[string]any); ok {
+		if label, ok := sticker["label"].(string); ok && label != "" {
+			return fmt.Sprintf("Sent sticker: %s", label)
+		}
+		return "Sent a sticker"
+	}
+	if gif, ok := m["gif"].(map[string]any); ok {
+		if title, ok := gif["title"].(string); ok && title != "" {
+			return truncatePreview(fmt.Sprintf("Sent GIF: %s", title), 100)
+		}
+		return "Sent a GIF"
+	}
+	if att, ok := m["attachment"].(map[string]any); ok {
+		if isImg, _ := att["isImage"].(bool); isImg {
+			return "Sent an image"
+		}
+		if name, ok := att["name"].(string); ok && name != "" {
+			return truncatePreview(fmt.Sprintf("Sent file: %s", name), 100)
+		}
+		return "Sent a file"
+	}
+	if atts, ok := m["attachments"].([]any); ok && len(atts) > 0 {
+		if len(atts) == 1 {
+			return "Sent a file"
+		}
+		return fmt.Sprintf("Sent %d files", len(atts))
+	}
+	return "Sent a message"
 }
