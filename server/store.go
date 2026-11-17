@@ -449,14 +449,14 @@ func (s *FileStore) SaveMessage(msg Message) error {
 	return s.saveLocked()
 }
 
-// GetMessages returns the latest messages for a room.
+// GetMessages returns the latest messages for a room in chronological order.
 func (s *FileStore) GetMessages(room string, limit int) ([]Message, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if limit <= 0 {
 		limit = 50
 	}
-	var res []Message
+	res := make([]Message, 0)
 	for i := len(s.data.Messages) - 1; i >= 0 && len(res) < limit; i-- {
 		if s.data.Messages[i].Room == room {
 			res = append([]Message{s.data.Messages[i]}, res...)

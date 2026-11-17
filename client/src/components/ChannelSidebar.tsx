@@ -1,10 +1,12 @@
 import React from 'react';
 import { Hash, Volume2, Users, LogOut, PhoneOff } from 'lucide-react';
 import clsx from 'clsx';
-import type { Channel } from '../types';
+import type { Channel, Friend } from '../types';
+import { getDmRoomId } from '../utils/dm';
 
 interface ChannelSidebarProps {
   channels: Channel[];
+  friends?: Friend[];
   activeChannel: string;
   onSelectChannel: (channelId: string) => void;
   username: string;
@@ -19,6 +21,7 @@ interface ChannelSidebarProps {
 
 export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
   channels,
+  friends = [],
   activeChannel,
   onSelectChannel,
   username,
@@ -153,6 +156,56 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
               );
             })}
           </div>
+        </div>
+
+        {/* Direct Messages Section */}
+        <div>
+          <div className="px-2.5 mb-2 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
+            Direct Messages
+          </div>
+          {friends.length === 0 ? (
+            <div className="px-2.5 py-1 text-[11px] text-text-muted/70">
+              No friends yet
+            </div>
+          ) : (
+            <div className="space-y-0.5">
+              {friends.map((friend) => {
+                const dmRoomId = getDmRoomId(username, friend.username);
+                const isActive = !isFriendsActive && activeChannel === dmRoomId;
+                return (
+                  <button
+                    key={friend.username}
+                    onClick={() => onSelectChannel(dmRoomId)}
+                    type="button"
+                    className={clsx(
+                      'w-full flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 group',
+                      isActive
+                        ? 'bg-card text-text-primary shadow-sm border border-white/[0.06]'
+                        : 'text-text-secondary hover:bg-card/40 hover:text-text-primary border border-transparent'
+                    )}
+                  >
+                    <div className="relative mr-2.5 flex-shrink-0">
+                      <div className="w-5 h-5 rounded-full bg-surface-elevated border border-white/[0.08] flex items-center justify-center text-[10px] font-semibold text-text-primary uppercase">
+                        {friend.username.charAt(0)}
+                      </div>
+                      <span
+                        className={clsx(
+                          'absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-surface',
+                          friend.isOnline ? 'bg-online' : 'bg-text-muted/60'
+                        )}
+                      />
+                    </div>
+                    <span className="truncate flex-1 text-left">{friend.username}</span>
+                    {isInCall && isActive && (
+                      <span className="text-[10px] font-medium text-online bg-online/10 px-1.5 py-0.5 rounded-full">
+                        Live
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </nav>
 

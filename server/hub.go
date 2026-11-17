@@ -40,6 +40,30 @@ func NewHub() *Hub {
 	}
 }
 
+// SetStore attaches a Store implementation to the Hub for message persistence.
+func (h *Hub) SetStore(store Store) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.store = store
+}
+
+// isAuthorizedForRoom checks whether username is allowed to access the room.
+// Deterministic DM rooms ("dm:<u1>:<u2>") are restricted strictly to u1 and u2.
+func isAuthorizedForRoom(room, username string) bool {
+	if !strings.HasPrefix(room, "dm:") {
+		return true
+	}
+	parts := strings.Split(room, ":")
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+		return false
+	}
+	normUser := strings.ToLower(strings.TrimSpace(username))
+	if normUser == "" {
+		return false
+	}
+	return normUser == strings.ToLower(parts[1]) || normUser == strings.ToLower(parts[2])
+}
+
 // Register adds a client to their room, announces their join, and broadcasts the current user list.
 func (h *Hub) Register(client *Client) {
 	if client == nil {
@@ -144,14 +168,17 @@ func (h *Hub) Unregister(client *Client) {
 	}
 }
 
+// getStore returns the attached Store safely under read lock.
+func (h *Hub) getStore() Store {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.store
+}
+
 // BroadcastToRoom sends a message to all connected clients in the designated room.
 func (h *Hub) BroadcastToRoom(roomName string, msg Message) {
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
-	}
-
-	if h.store != nil && msg.Type == "chat" {
-		_ = h.store.SaveMessage(msg)
 	}
 
 	data, err := json.Marshal(msg)

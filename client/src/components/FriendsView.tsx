@@ -14,10 +14,13 @@ import {
 import clsx from 'clsx';
 import type { Friend, FriendRequest } from '../types';
 import { getApiBaseUrl } from '../utils/api';
+import { getDmRoomId } from '../utils/dm';
 
 interface FriendsViewProps {
   token: string | null;
   currentUsername: string;
+  refreshTrigger?: number;
+  onFriendsChanged?: () => void;
   onOpenChat?: (channelId: string) => void;
 }
 
@@ -26,6 +29,8 @@ type TabType = 'online' | 'all' | 'pending' | 'add';
 export const FriendsView: React.FC<FriendsViewProps> = ({
   token,
   currentUsername,
+  refreshTrigger = 0,
+  onFriendsChanged,
   onOpenChat,
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('online');
@@ -75,7 +80,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
 
   useEffect(() => {
     fetchFriends();
-  }, [fetchFriends]);
+  }, [fetchFriends, refreshTrigger]);
 
   const handleSendRequest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -129,7 +134,10 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         },
         body: JSON.stringify({ fromUsername }),
       });
-      if (res.ok) fetchFriends();
+      if (res.ok) {
+        fetchFriends();
+        onFriendsChanged?.();
+      }
     } catch (err) {
       console.warn('Failed to accept request:', err);
     } finally {
@@ -149,7 +157,10 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         },
         body: JSON.stringify({ fromUsername }),
       });
-      if (res.ok) fetchFriends();
+      if (res.ok) {
+        fetchFriends();
+        onFriendsChanged?.();
+      }
     } catch (err) {
       console.warn('Failed to reject request:', err);
     } finally {
@@ -170,7 +181,10 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         },
         body: JSON.stringify({ friendUsername }),
       });
-      if (res.ok) fetchFriends();
+      if (res.ok) {
+        fetchFriends();
+        onFriendsChanged?.();
+      }
     } catch (err) {
       console.warn('Failed to remove friend:', err);
     } finally {
@@ -496,9 +510,9 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                       {onOpenChat && (
                         <button
                           type="button"
-                          onClick={() => onOpenChat('general')}
+                          onClick={() => onOpenChat(getDmRoomId(currentUsername, friend.username))}
                           className="p-2 rounded-lg bg-card hover:bg-accent text-text-secondary hover:text-white transition-colors"
-                          title="Jump to Chat"
+                          title={`Message ${friend.username}`}
                         >
                           <MessageSquare className="w-3.5 h-3.5" />
                         </button>

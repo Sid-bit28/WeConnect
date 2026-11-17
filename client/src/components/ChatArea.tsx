@@ -7,6 +7,8 @@ import {
   ArrowUp,
   AlertCircle,
   RefreshCw,
+  AtSign,
+  Loader2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Message, ConnectionStatus } from '../types';
@@ -15,6 +17,8 @@ interface ChatAreaProps {
   channelName: string;
   channelType?: 'text' | 'voice';
   channelTopic?: string;
+  isDm?: boolean;
+  isLoadingHistory?: boolean;
   messages: Message[];
   currentUsername: string;
   connectionStatus: ConnectionStatus;
@@ -36,6 +40,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   channelName,
   channelType = 'text',
   channelTopic,
+  isDm = false,
+  isLoadingHistory = false,
   messages,
   currentUsername,
   connectionStatus,
@@ -100,7 +106,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       {/* Refined Minimal Channel Header */}
       <header className="h-14 border-b border-white/[0.07] px-6 flex items-center justify-between bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0">
         <div className="flex items-center space-x-2.5 min-w-0">
-          {channelType === 'voice' ? (
+          {isDm ? (
+            <AtSign className="w-4 h-4 text-accent flex-shrink-0" />
+          ) : channelType === 'voice' ? (
             <Volume2 className="w-4 h-4 text-text-muted flex-shrink-0" />
           ) : (
             <Hash className="w-4 h-4 text-text-muted flex-shrink-0" />
@@ -108,11 +116,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <h2 className="font-semibold text-sm text-text-primary tracking-tight truncate">
             {channelName}
           </h2>
-          {channelTopic && (
+          {(isDm || channelTopic) && (
             <>
               <span className="text-white/10 hidden sm:inline">/</span>
               <span className="text-xs text-text-muted truncate max-w-md hidden sm:inline">
-                {channelTopic}
+                {isDm ? 'Direct Message' : channelTopic}
               </span>
             </>
           )}
@@ -203,20 +211,31 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
       {/* Messages Feed */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
-        {messages.length === 0 ? (
+        {isLoadingHistory && messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center select-none">
+            <Loader2 className="w-5 h-5 animate-spin text-accent mb-2" />
+            <span className="text-xs text-text-muted">Loading messages...</span>
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center max-w-sm mx-auto select-none">
             <div className="w-12 h-12 rounded-2xl bg-surface border border-white/[0.07] flex items-center justify-center mb-4">
-              {channelType === 'voice' ? (
+              {isDm ? (
+                <AtSign className="w-5 h-5 text-accent" />
+              ) : channelType === 'voice' ? (
                 <Volume2 className="w-5 h-5 text-text-muted" />
               ) : (
                 <Hash className="w-5 h-5 text-text-muted" />
               )}
             </div>
             <h3 className="text-base font-semibold text-text-primary mb-1">
-              Welcome to {channelType === 'voice' ? '' : '#'}{channelName}
+              {isDm
+                ? `@${channelName}`
+                : `Welcome to ${channelType === 'voice' ? '' : '#'}${channelName}`}
             </h3>
             <p className="text-xs text-text-secondary leading-relaxed">
-              This is the start of the conversation. Send a message below or launch a live call.
+              {isDm
+                ? `This is the start of your private conversation with @${channelName}. Send a message or start a 1-on-1 call.`
+                : 'This is the start of the conversation. Send a message below or launch a live call.'}
             </p>
           </div>
         ) : (
@@ -342,7 +361,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`Message ${channelType === 'voice' ? '' : '#'}${channelName}...`}
+            placeholder={
+              isDm
+                ? `Message @${channelName}...`
+                : `Message ${channelType === 'voice' ? '' : '#'}${channelName}...`
+            }
             disabled={connectionStatus !== 'connected'}
             className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50"
           />

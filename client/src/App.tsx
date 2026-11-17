@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { ChannelSidebar } from './components/ChannelSidebar';
 import { ChatArea } from './components/ChatArea';
 import { VideoGrid } from './components/VideoGrid';
@@ -8,7 +8,9 @@ import { AuthScreen } from './components/AuthScreen';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
-import type { Channel, Message, AuthUser } from './types';
+import type { Channel, Message, AuthUser, Friend } from './types';
+import { getApiBaseUrl } from './utils/api';
+import { isDmRoom, getDmPeerUsername } from './utils/dm';
 import { Video, Loader2 } from 'lucide-react';
 
 const DEFAULT_CHANNELS: Channel[] = [
@@ -32,20 +34,53 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const [isFriendsViewActive, setIsFriendsViewActive] = useState<boolean>(false);
   const [showUserList, setShowUserList] = useState<boolean>(true);
   const [isCallViewActive, setIsCallViewActive] = useState<boolean>(false);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [friendsRefreshTrigger, setFriendsRefreshTrigger] = useState<number>(0);
 
   const handleSignalRef = useRef<((msg: Message) => Promise<void>) | null>(null);
 
-  const { status, messages, users, error: socketError, send, sendSignal, connect } = useSocket(
-    activeChannelId,
-    activeUsername,
-    {
-      onMessage: (msg) => {
-        if (handleSignalRef.current) {
-          handleSignalRef.current(msg);
-        }
-      },
+  const fetchFriendsList = useCallback(async () => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/friends`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const list: Friend[] = Array.isArray(data) ? data : data.friends || [];
+        setFriends(list);
+      }
+    } catch (err) {
+      console.warn('Failed to refresh sidebar friends list:', err);
     }
-  );
+  }, [token]);
+
+  useEffect(() => {
+    fetchFriendsList();
+  }, [fetchFriendsList]);
+
+  const {
+    status,
+    messages,
+    isLoadingHistory,
+    users,
+    error: socketError,
+    send,
+    sendSignal,
+    connect,
+  } = useSocket(activeChannelId, activeUsername, {
+    token,
+    onMessage: (msg) => {
+      if (msg.type === 'friend_update') {
+        fetchFriendsList();
+        setFriendsRefreshTrigger((prev) => prev + 1);
+      }
+      if (handleSignalRef.current) {
+        handleSignalRef.current(msg);
+      }
+    },
+  });
 
   const webrtc = useWebRTC({
     room: activeChannelId,
@@ -59,8 +94,19 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     handleSignalRef.current = webrtc.handleSignal;
   }, [webrtc.handleSignal]);
 
+  // Resolve active channel vs Direct Message room metadata
+  const activeIsDm = isDmRoom(activeChannelId);
+  const dmPeerRaw = activeIsDm ? getDmPeerUsername(activeChannelId, activeUsername) : null;
+  const matchedFriend = dmPeerRaw
+    ? friends.find((f) => f.username.toLowerCase() === dmPeerRaw.toLowerCase())
+    : undefined;
   const activeChannel =
     DEFAULT_CHANNELS.find((c) => c.id === activeChannelId) || DEFAULT_CHANNELS[0];
+
+  const activeDisplayName = activeIsDm
+    ? matchedFriend?.username || dmPeerRaw || 'Direct Message'
+    : activeChannel.name;
+  const activeCallLabel = activeIsDm ? `@${activeDisplayName}` : activeDisplayName;
 
   useEffect(() => {
     if (webrtc.isInCall) {
@@ -103,12 +149,13 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       {/* Left Navigation Sidebar */}
       <ChannelSidebar
         channels={DEFAULT_CHANNELS}
+        friends={friends}
         activeChannel={activeChannelId}
         onSelectChannel={handleChannelSelect}
         username={activeUsername}
         connectionStatus={status}
         isInCall={webrtc.isInCall}
-        activeVoiceChannelName={activeChannel.name}
+        activeVoiceChannelName={activeCallLabel}
         onLeaveCall={webrtc.leaveCall}
         isFriendsActive={isFriendsViewActive}
         onSelectFriends={handleSelectFriends}
@@ -122,7 +169,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
           <div className="bg-online/10 border-b border-online/20 px-6 py-2 flex items-center justify-between text-xs font-medium text-online z-20 flex-shrink-0">
             <div className="flex items-center space-x-2">
               <span className="w-1.5 h-1.5 rounded-full bg-online animate-pulse" />
-              <span>Active call in {activeChannel.name}</span>
+              <span>Active call in {activeCallLabel}</span>
             </div>
             <button
               type="button"
@@ -142,14 +189,16 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
           <FriendsView
             token={token}
             currentUsername={activeUsername}
-            onOpenChat={(channelId) => {
-              setActiveChannelId(channelId);
+            refreshTrigger={friendsRefreshTrigger}
+            onFriendsChanged={fetchFriendsList}
+            onOpenChat={(roomId) => {
+              setActiveChannelId(roomId);
               setIsFriendsViewActive(false);
             }}
           />
         ) : isCallViewActive ? (
           <VideoGrid
-            channelName={activeChannel.name}
+            channelName={activeCallLabel}
             localStream={webrtc.localStream}
             localScreenStream={webrtc.localScreenStream}
             peers={webrtc.peers}
@@ -166,9 +215,11 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
           />
         ) : (
           <ChatArea
-            channelName={activeChannel.name}
-            channelType={activeChannel.type}
-            channelTopic={activeChannel.topic}
+            channelName={activeDisplayName}
+            channelType={activeIsDm ? 'text' : activeChannel.type}
+            channelTopic={activeIsDm ? undefined : activeChannel.topic}
+            isDm={activeIsDm}
+            isLoadingHistory={isLoadingHistory}
             messages={messages}
             currentUsername={activeUsername}
             connectionStatus={status}

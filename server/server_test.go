@@ -506,3 +506,184 @@ func TestICEConfigAndSPA(t *testing.T) {
 		t.Fatalf("expected WeConnect HTML page, got %s", w.Body.String())
 	}
 }
+
+func dialWSRaw(serverURL, room, user, token string) (*websocket.Conn, *http.Response, error) {
+	u, _ := url.Parse(serverURL)
+	u.Scheme = "ws"
+	u.Path = "/ws"
+	q := u.Query()
+	if room != "" {
+		q.Set("room", room)
+	}
+	if user != "" {
+		q.Set("user", user)
+	}
+	if token != "" {
+		q.Set("token", token)
+	}
+	u.RawQuery = q.Encode()
+	return websocket.DefaultDialer.Dial(u.String(), nil)
+}
+
+func TestChatPersistenceAndHistory(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+
+	// Register alice
+	wAlice := doJSONRequest(handler, "POST", "/api/auth/register", map[string]string{
+		"username": "alice",
+		"password": "password123",
+	}, "")
+	var aRes map[string]any
+	_ = json.Unmarshal(wAlice.Body.Bytes(), &aRes)
+	aliceToken := aRes["token"].(string)
+
+	// Invalid token on WS should fail with 401
+	_, resp, err := dialWSRaw(server.URL, "general", "", "invalid-token")
+	if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for invalid ws token, got err=%v resp=%v", err, resp)
+	}
+
+	// Missing token on GET /api/messages should return 401
+	w := doJSONRequest(handler, "GET", "/api/messages?room=general", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /api/messages, got %d", w.Code)
+	}
+
+	// Connect alice using token
+	aliceWS, _, err := dialWSRaw(server.URL, "general", "", aliceToken)
+	if err != nil {
+		t.Fatalf("alice ws connect with token failed: %v", err)
+	}
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	// Send 3 messages in order
+	sentContents := []string{"First message", "Second message", "Third message"}
+	for _, content := range sentContents {
+		if err := aliceWS.WriteJSON(Message{Type: "chat", Content: content}); err != nil {
+			t.Fatalf("failed to write chat message: %v", err)
+		}
+		echo := readNextMessage(t, aliceWS, 2*time.Second)
+		if echo.Content != content || echo.Sender != "alice" {
+			t.Fatalf("unexpected echo: %+v", echo)
+		}
+	}
+
+	// Fetch persisted history via GET /api/messages
+	w = doJSONRequest(handler, "GET", "/api/messages?room=general&limit=50", nil, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/messages, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	var histRes struct {
+		Messages []Message `json:"messages"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &histRes); err != nil {
+		t.Fatalf("failed to decode messages response: %v", err)
+	}
+
+	if len(histRes.Messages) != 3 {
+		t.Fatalf("expected 3 persisted messages, got %d: %+v", len(histRes.Messages), histRes.Messages)
+	}
+	for i, want := range sentContents {
+		if histRes.Messages[i].Content != want || histRes.Messages[i].Sender != "alice" || histRes.Messages[i].Room != "general" {
+			t.Fatalf("message %d mismatch: want %q from alice, got %+v", i, want, histRes.Messages[i])
+		}
+	}
+}
+
+func TestDMAccessControl(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+
+	registerUser := func(username string) string {
+		w := doJSONRequest(handler, "POST", "/api/auth/register", map[string]string{
+			"username": username,
+			"password": "password123",
+		}, "")
+		var res map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		return res["token"].(string)
+	}
+
+	aliceToken := registerUser("alice")
+	bobToken := registerUser("bob")
+	charlieToken := registerUser("charlie")
+
+	dmRoom := "dm:alice:bob"
+
+	// 1. Alice connects to dm:alice:bob -> allowed
+	aliceWS, _, err := dialWSRaw(server.URL, dmRoom, "", aliceToken)
+	if err != nil {
+		t.Fatalf("alice should be allowed to join %s: %v", dmRoom, err)
+	}
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	// 2. Bob connects to dm:alice:bob -> allowed
+	bobWS, _, err := dialWSRaw(server.URL, dmRoom, "", bobToken)
+	if err != nil {
+		t.Fatalf("bob should be allowed to join %s: %v", dmRoom, err)
+	}
+	defer bobWS.Close()
+	_ = readNextMessage(t, bobWS, 2*time.Second)   // join
+	_ = readNextMessage(t, bobWS, 2*time.Second)   // users
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // bob join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	// Alice sends private DM
+	if err := aliceWS.WriteJSON(Message{Type: "chat", Content: "Secret hello Bob"}); err != nil {
+		t.Fatalf("alice dm send failed: %v", err)
+	}
+	_ = readNextMessage(t, aliceWS, 2*time.Second)
+	bobMsg := readNextMessage(t, bobWS, 2*time.Second)
+	if bobMsg.Content != "Secret hello Bob" || bobMsg.Sender != "alice" {
+		t.Fatalf("bob expected DM from alice, got %+v", bobMsg)
+	}
+
+	// 3. Charlie connects to dm:alice:bob with token -> 403 Forbidden
+	_, resp, err := dialWSRaw(server.URL, dmRoom, "", charlieToken)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for charlie WS in %s, got err=%v resp=%v", dmRoom, err, resp)
+	}
+
+	// 4. Charlie connects to dm:alice:bob with user param -> 403 Forbidden
+	_, resp, err = dialWSRaw(server.URL, dmRoom, "charlie", "")
+	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for charlie user param WS in %s, got err=%v resp=%v", dmRoom, err, resp)
+	}
+
+	// 5. Alice & Bob can fetch DM history via GET /api/messages
+	for name, tok := range map[string]string{"alice": aliceToken, "bob": bobToken} {
+		w := doJSONRequest(handler, "GET", "/api/messages?room="+dmRoom, nil, tok)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s expected 200 for DM history, got %d (%s)", name, w.Code, w.Body.String())
+		}
+		var hist struct {
+			Messages []Message `json:"messages"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &hist)
+		if len(hist.Messages) != 1 || hist.Messages[0].Content != "Secret hello Bob" {
+			t.Fatalf("%s expected 1 DM message, got %+v", name, hist.Messages)
+		}
+	}
+
+	// 6. Charlie gets 403 Forbidden on GET /api/messages for dm:alice:bob
+	w := doJSONRequest(handler, "GET", "/api/messages?room="+dmRoom, nil, charlieToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for charlie on DM history, got %d (%s)", w.Code, w.Body.String())
+	}
+}

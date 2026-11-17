@@ -146,6 +146,11 @@ func (c *Client) readPump() {
 			if strings.TrimSpace(msg.Content) == "" {
 				continue
 			}
+			if store := c.hub.getStore(); store != nil {
+				if err := store.SaveMessage(msg); err != nil {
+					log.Printf("[Client] Failed to save chat message in room '%s': %v", c.room, err)
+				}
+			}
 			c.hub.BroadcastToRoom(c.room, msg)
 
 		case "signal":

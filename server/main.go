@@ -89,13 +89,33 @@ func healthHandler(hub *Hub) http.HandlerFunc {
 }
 
 // wsHandler upgrades HTTP to WebSocket and registers the client into the requested room.
-func wsHandler(hub *Hub) http.HandlerFunc {
+func wsHandler(hub *Hub, store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		room := strings.TrimSpace(r.URL.Query().Get("room"))
 		user := strings.TrimSpace(r.URL.Query().Get("user"))
+		token := strings.TrimSpace(r.URL.Query().Get("token"))
 
-		if room == "" || user == "" {
+		if room == "" {
+			http.Error(w, "Query parameter 'room' is required", http.StatusBadRequest)
+			return
+		}
+
+		if token != "" && store != nil {
+			authUser, err := store.AuthenticateToken(token)
+			if err != nil {
+				http.Error(w, "Invalid or expired authentication token", http.StatusUnauthorized)
+				return
+			}
+			user = authUser.Username
+		}
+
+		if user == "" {
 			http.Error(w, "Query parameters 'room' and 'user' are required", http.StatusBadRequest)
+			return
+		}
+
+		if !isAuthorizedForRoom(room, user) {
+			http.Error(w, "Forbidden: not authorized to access this room", http.StatusForbidden)
 			return
 		}
 
@@ -437,7 +457,7 @@ func iceConfigHandler() http.HandlerFunc {
 // --- Chat Messages History Handler ---
 
 func messagesHandler(store Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 			return
@@ -446,6 +466,11 @@ func messagesHandler(store Store) http.HandlerFunc {
 		room := strings.TrimSpace(r.URL.Query().Get("room"))
 		if room == "" {
 			writeError(w, http.StatusBadRequest, "room query parameter is required")
+			return
+		}
+
+		if !isAuthorizedForRoom(room, user.Username) {
+			writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
 			return
 		}
 
@@ -465,7 +490,7 @@ func messagesHandler(store Store) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"messages": msgs,
 		})
-	}
+	})
 }
 
 // --- Single-Port Static SPA Handler ---
@@ -509,11 +534,15 @@ func spaHandler(staticDir string) http.HandlerFunc {
 
 // setupRoutes configures HTTP routes with Hub, Store, and SPA serving.
 func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
+	if hub.getStore() == nil && store != nil {
+		hub.SetStore(store)
+	}
+
 	mux := http.NewServeMux()
 
 	// Base endpoints
 	mux.HandleFunc("/health", healthHandler(hub))
-	mux.HandleFunc("/ws", wsHandler(hub))
+	mux.HandleFunc("/ws", wsHandler(hub, store))
 
 	// Config endpoints
 	mux.HandleFunc("/api/config/ice", iceConfigHandler())
@@ -603,7 +632,7 @@ func main() {
 	}
 
 	hub := NewHub()
-	hub.store = store
+	hub.SetStore(store)
 	handler := setupRoutes(hub, store, staticDir)
 
 	log.Printf("[Server] WeConnect full-stack server listening on %s...", addr)

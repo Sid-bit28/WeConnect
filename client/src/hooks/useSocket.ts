@@ -1,12 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Message, MessageType, ConnectionStatus } from '../types';
-import { getWsBaseUrl } from '../utils/api';
+import { getApiBaseUrl, getWsBaseUrl } from '../utils/api';
 
 interface UseSocketOptions {
+  token?: string | null;
   serverUrl?: string;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
   onMessage?: (msg: Message) => void;
+}
+
+function getMessageKey(msg: Message): string {
+  return `${msg.type}|${msg.sender}|${msg.timestamp || 0}|${msg.content || ''}`;
 }
 
 export function useSocket(
@@ -15,6 +20,7 @@ export function useSocket(
   options: UseSocketOptions = {}
 ) {
   const {
+    token,
     serverUrl = getWsBaseUrl(),
     reconnectInterval = 3000,
     maxReconnectAttempts = 5,
@@ -23,6 +29,7 @@ export function useSocket(
 
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [users, setUsers] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,12 +43,92 @@ export function useSocket(
     onMessageRef.current = onMessage;
   }, [onMessage]);
 
-  // Clear messages & users when room changes
+  // Clear state and fetch persisted chat history whenever room changes
   useEffect(() => {
     setMessages([]);
     setUsers([]);
     setError(null);
-  }, [room]);
+
+    if (!room.trim() || !token) {
+      setIsLoadingHistory(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let isCancelled = false;
+
+    const loadHistory = async () => {
+      setIsLoadingHistory(true);
+      try {
+        const res = await fetch(
+          `${getApiBaseUrl()}/api/messages?room=${encodeURIComponent(room)}&limit=50`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            signal: controller.signal,
+          }
+        );
+
+        if (isCancelled) return;
+
+        if (!res.ok) {
+          if (res.status === 403) {
+            setError('You do not have permission to view this conversation.');
+          } else if (res.status !== 404) {
+            console.warn(`Failed to load message history (${res.status})`);
+          }
+          return;
+        }
+
+        const data = await res.json();
+        const history: Message[] = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.messages)
+          ? data.messages
+          : [];
+
+        if (!isCancelled && history.length > 0) {
+          setMessages((prev) => {
+            const seen = new Set<string>();
+            const merged: Message[] = [];
+
+            for (const m of history) {
+              const key = getMessageKey(m);
+              if (!seen.has(key)) {
+                seen.add(key);
+                merged.push(m);
+              }
+            }
+            for (const m of prev) {
+              const key = getMessageKey(m);
+              if (!seen.has(key)) {
+                seen.add(key);
+                merged.push(m);
+              }
+            }
+
+            return merged;
+          });
+        }
+      } catch (err: any) {
+        if (err?.name !== 'AbortError') {
+          console.warn('Error fetching chat history:', err);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingHistory(false);
+        }
+      }
+    };
+
+    loadHistory();
+
+    return () => {
+      isCancelled = true;
+      controller.abort();
+    };
+  }, [room, token]);
 
   const connect = useCallback(() => {
     if (!username.trim() || !room.trim()) {
@@ -49,7 +136,6 @@ export function useSocket(
       return;
     }
 
-    // Clean up existing socket if any
     if (wsRef.current) {
       wsRef.current.onclose = null;
       wsRef.current.onerror = null;
@@ -61,7 +147,15 @@ export function useSocket(
     setError(null);
 
     try {
-      const urlWithParams = `${serverUrl}?room=${encodeURIComponent(room)}&user=${encodeURIComponent(username)}`;
+      const params = new URLSearchParams({
+        room,
+        user: username,
+      });
+      if (token) {
+        params.set('token', token);
+      }
+
+      const urlWithParams = `${serverUrl}?${params.toString()}`;
       const ws = new WebSocket(urlWithParams);
       wsRef.current = ws;
 
@@ -77,14 +171,19 @@ export function useSocket(
         try {
           const msg: Message = JSON.parse(event.data);
 
-          // Forward to custom listener if subscribed
           if (onMessageRef.current) {
             onMessageRef.current(msg);
           }
 
           switch (msg.type) {
             case 'chat':
-              setMessages((prev) => [...prev, msg]);
+              setMessages((prev) => {
+                const key = getMessageKey(msg);
+                if (prev.some((m) => getMessageKey(m) === key)) {
+                  return prev;
+                }
+                return [...prev, msg];
+              });
               break;
 
             case 'users':
@@ -129,7 +228,8 @@ export function useSocket(
             case 'signal':
             case 'call-join':
             case 'call-leave':
-              // Handled by onMessage callback / WebRTC
+            case 'friend_update':
+              // Handled via onMessage callback
               break;
 
             default:
@@ -153,18 +253,16 @@ export function useSocket(
         if (isUnmountedRef.current) return;
         setStatus('disconnected');
 
-        // Auto-reconnect if not closed cleanly
         if (event.code !== 1000 && reconnectAttemptsRef.current < maxReconnectAttempts) {
           reconnectAttemptsRef.current += 1;
           const delay = reconnectInterval * Math.min(reconnectAttemptsRef.current, 3);
-          console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})...`);
           reconnectTimeoutRef.current = setTimeout(() => {
             if (!isUnmountedRef.current) {
               connect();
             }
           }, delay);
         } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-          setError('Max reconnection attempts reached. Click retry to connect.');
+          setError('Max reconnection attempts reached. Click reconnect to try again.');
         }
       };
     } catch (err: any) {
@@ -173,7 +271,7 @@ export function useSocket(
         setError(err?.message || 'Failed to initialize WebSocket');
       }
     }
-  }, [room, username, serverUrl, reconnectInterval, maxReconnectAttempts]);
+  }, [room, username, token, serverUrl, reconnectInterval, maxReconnectAttempts]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -245,6 +343,7 @@ export function useSocket(
   return {
     status,
     messages,
+    isLoadingHistory,
     users,
     error,
     send,
