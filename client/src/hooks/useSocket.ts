@@ -300,6 +300,7 @@ export function useSocket(
             case 'friend_update':
             case 'unread':
             case 'channel_update':
+            case 'profile_update':
               // Handled via onMessage callback
               break;
 

@@ -248,7 +248,7 @@ func (c *Client) readPump() {
 						}
 					}
 				}
-				if strings.HasPrefix(cand, "dm:") && isAuthorizedForRoom(cand, c.username) {
+				if strings.HasPrefix(cand, "dm:") && isAuthorizedForRoom(cand, c.username, c.hub.getStore()) {
 					dmRoom = cand
 				}
 			}

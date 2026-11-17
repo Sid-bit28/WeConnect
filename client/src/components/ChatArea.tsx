@@ -20,6 +20,9 @@ import {
   Trash2,
   Search,
   CornerUpLeft,
+  Lock,
+  UserPlus,
+  Check,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
@@ -30,12 +33,15 @@ import type {
   StickerData,
   GifData,
   ReplyToData,
+  UserProfile,
+  Friend,
 } from '../types';
 import { getApiBaseUrl } from '../utils/api';
 import { MarkdownContent } from '../utils/markdown';
 import { getStickerById, getStickerSvgDataUri } from '../utils/stickers';
 import { ImageLightbox } from './ImageLightbox';
 import { ExpressionPicker } from './ExpressionPicker';
+import { UserAvatar } from './UserAvatar';
 
 interface ChatAreaProps {
   roomId: string;
@@ -44,6 +50,12 @@ interface ChatAreaProps {
   channelTopic?: string;
   token: string;
   isDm?: boolean;
+  isPrivate?: boolean;
+  isChannelCreator?: boolean;
+  channelMembers?: string[];
+  friends?: Friend[];
+  profiles?: Record<string, UserProfile>;
+  onInviteMember?: (username: string) => Promise<string | null>;
   isLoadingHistory?: boolean;
   messages: Message[];
   currentUsername: string;
@@ -113,6 +125,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   channelTopic,
   token,
   isDm = false,
+  isPrivate = false,
+  isChannelCreator = false,
+  channelMembers = [],
+  friends = [],
+  profiles = {},
+  onInviteMember,
   isLoadingHistory = false,
   messages,
   currentUsername,
@@ -138,7 +156,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
 
-  // Reply, Edit, Highlight & Search states
+  // Reply, Edit, Highlight, Search & Invite states
   const [replyingTo, setReplyingTo] = useState<ReplyToData | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
@@ -150,8 +168,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [searchResults, setSearchResults] = useState<Message[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
+  const [isInviteOpen, setIsInviteOpen] = useState(false);
+  const [invitingUser, setInvitingUser] = useState<string | null>(null);
+  const [invitedFeedback, setInvitedFeedback] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const invitePopoverRef = useRef<HTMLDivElement | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -164,6 +188,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
 
+  // Close invite popover on click-outside or Escape
+  useEffect(() => {
+    if (!isInviteOpen) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsInviteOpen(false);
+    };
+    const handleClickOutside = (e: MouseEvent) => {
+      if (invitePopoverRef.current && !invitePopoverRef.current.contains(e.target as Node)) {
+        setIsInviteOpen(false);
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isInviteOpen]);
+
   // Reset per-room interactive states when switching rooms
   useEffect(() => {
     setUploadError(null);
@@ -173,6 +216,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     setIsSearchOpen(false);
     setSearchQuery('');
     setSearchResults([]);
+    setIsInviteOpen(false);
+    setInviteError(null);
+    setInvitedFeedback(null);
     return () => {
       if (typingIdleTimeoutRef.current) {
         clearTimeout(typingIdleTimeoutRef.current);
@@ -527,20 +573,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     });
   };
 
-  const getAvatarStyle = (name: string) => {
-    const styles = [
-      'bg-indigo-500/15 text-indigo-300 border-indigo-500/25',
-      'bg-emerald-500/15 text-emerald-300 border-emerald-500/25',
-      'bg-amber-500/15 text-amber-300 border-amber-500/25',
-      'bg-rose-500/15 text-rose-300 border-rose-500/25',
-      'bg-cyan-500/15 text-cyan-300 border-cyan-500/25',
-      'bg-violet-500/15 text-violet-300 border-violet-500/25',
-    ];
-    let hash = 0;
-    for (let i = 0; i < name.length; i++) {
-      hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  const invitableFriends = friends.filter(
+    (f) => !channelMembers.some((m) => m.toLowerCase() === f.username.toLowerCase())
+  );
+
+  const handleInviteFriend = async (targetUsername: string) => {
+    if (!onInviteMember) return;
+    setInvitingUser(targetUsername);
+    setInviteError(null);
+    setInvitedFeedback(null);
+    const err = await onInviteMember(targetUsername);
+    setInvitingUser(null);
+    if (err) {
+      setInviteError(err);
+    } else {
+      setInvitedFeedback(`Invited ${targetUsername}`);
     }
-    return styles[Math.abs(hash) % styles.length];
   };
 
   const renderHoverActions = (msg: Message, isAuthor: boolean) => {
@@ -837,10 +885,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       )}
 
       {/* Refined Minimal Channel Header */}
-      <header className="h-14 border-b border-white/[0.07] px-6 flex items-center justify-between bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0">
+      <header className="h-14 border-b border-white/[0.07] px-6 flex items-center justify-between bg-canvas/80 backdrop-blur-md z-20 flex-shrink-0">
         <div className="flex items-center space-x-2.5 min-w-0">
           {isDm ? (
             <AtSign className="w-4 h-4 text-accent flex-shrink-0" />
+          ) : isPrivate ? (
+            <Lock className="w-4 h-4 text-accent flex-shrink-0" />
           ) : channelType === 'voice' ? (
             <Volume2 className="w-4 h-4 text-text-muted flex-shrink-0" />
           ) : (
@@ -849,6 +899,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <h2 className="font-semibold text-sm text-text-primary tracking-tight truncate">
             {channelName}
           </h2>
+          {isPrivate && !isDm && (
+            <span className="text-[10px] font-medium text-accent bg-accent-muted px-1.5 py-0.5 rounded-md flex-shrink-0">
+              Private
+            </span>
+          )}
           {(isDm || channelTopic) && (
             <>
               <span className="text-white/10 hidden sm:inline">/</span>
@@ -861,6 +916,89 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
         {/* Purposeful Actions Only */}
         <div className="flex items-center space-x-2 flex-shrink-0">
+          {/* Creator-Only Private Group Invite Button */}
+          {isPrivate && isChannelCreator && onInviteMember && (
+            <div className="relative" ref={invitePopoverRef}>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsInviteOpen((prev) => !prev);
+                  setInviteError(null);
+                  setInvitedFeedback(null);
+                }}
+                className={clsx(
+                  'px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center space-x-1.5 transition-all',
+                  isInviteOpen
+                    ? 'bg-card border-accent/50 text-accent'
+                    : 'bg-surface hover:bg-card border-white/[0.08] text-text-primary'
+                )}
+                title="Invite friends to this private group"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Invite</span>
+              </button>
+
+              {isInviteOpen && (
+                <div className="absolute right-0 top-full mt-2 w-64 bg-surface/95 backdrop-blur-xl border border-white/[0.1] rounded-2xl shadow-2xl p-3 z-30 select-none">
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-text-muted mb-2 px-1">
+                    Invite Friends
+                  </div>
+
+                  {inviteError && (
+                    <div className="mb-2 px-2 py-1.5 rounded-lg bg-danger-muted border border-danger/25 text-[11px] text-danger">
+                      {inviteError}
+                    </div>
+                  )}
+
+                  {invitedFeedback && (
+                    <div className="mb-2 px-2 py-1.5 rounded-lg bg-online/10 border border-online/25 text-[11px] text-online flex items-center space-x-1.5">
+                      <Check className="w-3 h-3" />
+                      <span>{invitedFeedback}</span>
+                    </div>
+                  )}
+
+                  {invitableFriends.length === 0 ? (
+                    <div className="text-xs text-text-muted px-1 py-2">
+                      All of your friends are already in this group.
+                    </div>
+                  ) : (
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                      {invitableFriends.map((friend) => {
+                        const fp = profiles[friend.username.toLowerCase()];
+                        const isBusy = invitingUser === friend.username;
+                        return (
+                          <div
+                            key={friend.username}
+                            className="flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-card/60 transition-colors"
+                          >
+                            <div className="flex items-center space-x-2 min-w-0">
+                              <UserAvatar
+                                username={friend.username}
+                                avatarUrl={fp?.avatarUrl || friend.avatarUrl}
+                                size="xs"
+                              />
+                              <span className="text-xs text-text-primary truncate">
+                                {friend.username}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => void handleInviteFriend(friend.username)}
+                              className="px-2 py-1 rounded-md bg-accent hover:bg-accent-hover disabled:opacity-50 text-white text-[10px] font-medium transition-colors flex-shrink-0"
+                            >
+                              {isBusy ? '...' : 'Invite'}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Search Toggle */}
           <button
             type="button"
@@ -1166,15 +1304,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 >
                   {renderHoverActions(msg, isSelf)}
 
-                  {/* Minimal Avatar */}
-                  <div
-                    className={clsx(
-                      'w-8 h-8 rounded-full border flex items-center justify-center font-semibold text-xs flex-shrink-0 select-none mt-0.5',
-                      getAvatarStyle(msg.sender)
-                    )}
-                  >
-                    {msg.sender.charAt(0).toUpperCase()}
-                  </div>
+                  {/* User Avatar */}
+                  <UserAvatar
+                    username={msg.sender}
+                    avatarUrl={profiles[msg.sender.toLowerCase()]?.avatarUrl}
+                    size="md"
+                    className="mt-0.5"
+                  />
 
                   {/* Message Body */}
                   <div className="flex-1 min-w-0">

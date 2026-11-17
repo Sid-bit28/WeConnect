@@ -16,7 +16,16 @@ export type MessageType =
   | "incoming_call"
   | "call_ended"
   | "call_declined"
-  | "call-decline";
+  | "call-decline"
+  | "profile_update";
+
+export type UserStatus = 'online' | 'away' | 'dnd';
+
+export interface UserProfile {
+  username: string;
+  avatarUrl?: string;
+  status?: UserStatus;
+}
 
 export interface Attachment {
   url: string;
@@ -73,6 +82,8 @@ export interface Channel {
   topic?: string;
   createdBy?: string;
   createdAt?: number;
+  isPrivate?: boolean;
+  members?: string[];
   unreadCount?: number;
 }
 
@@ -102,11 +113,15 @@ export interface PeerStream {
 
 export interface AuthUser {
   username: string;
+  avatarUrl?: string;
+  status?: UserStatus;
 }
 
 export interface Friend {
   username: string;
   isOnline?: boolean;
+  avatarUrl?: string;
+  status?: UserStatus;
 }
 
 export interface FriendRequest {

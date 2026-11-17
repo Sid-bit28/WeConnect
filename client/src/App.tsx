@@ -11,7 +11,15 @@ import { IncomingCallBanner, type IncomingCall } from './components/IncomingCall
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
-import type { Channel, Message, MessageData, AuthUser, Friend } from './types';
+import type {
+  Channel,
+  Message,
+  MessageData,
+  AuthUser,
+  Friend,
+  UserProfile,
+  UserStatus,
+} from './types';
 import { getApiBaseUrl } from './utils/api';
 import { isDmRoom, getDmPeerUsername } from './utils/dm';
 import { playNotificationChime, startRingtone } from './utils/sound';
@@ -44,12 +52,26 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const [channelError, setChannelError] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
+  const [profiles, setProfiles] = useState<Record<string, UserProfile>>(() => ({
+    [user.username.toLowerCase()]: {
+      username: user.username,
+      avatarUrl: user.avatarUrl || '',
+      status: user.status || 'online',
+    },
+  }));
+
+  const currentProfile: UserProfile = profiles[activeUsername.toLowerCase()] || {
+    username: activeUsername,
+    avatarUrl: user.avatarUrl || '',
+    status: user.status || 'online',
+  };
 
   const handleSignalRef = useRef<((msg: Message) => Promise<void>) | null>(null);
   const leaveCallRef = useRef<(() => void) | null>(null);
   const isInCallRef = useRef<boolean>(false);
   const activeChannelIdRef = useRef<string>(activeChannelId);
   const isFriendsViewActiveRef = useRef<boolean>(isFriendsViewActive);
+  const currentStatusRef = useRef<UserStatus>(currentProfile.status || 'online');
   const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const notificationRequestedRef = useRef<boolean>(false);
   const incomingCallRef = useRef<IncomingCall | null>(null);
@@ -64,6 +86,10 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   useEffect(() => {
     isFriendsViewActiveRef.current = isFriendsViewActive;
   }, [isFriendsViewActive]);
+
+  useEffect(() => {
+    currentStatusRef.current = currentProfile.status || 'online';
+  }, [currentProfile.status]);
 
   useEffect(() => {
     incomingCallRef.current = incomingCall;
@@ -139,6 +165,11 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
 
   const pushDmNotification = useCallback(
     (room: string, sender: string, preview: string) => {
+      // Respect Do Not Disturb: suppress toast, chime, and desktop popup
+      if (currentStatusRef.current === 'dnd') {
+        return;
+      }
+
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const item: NotificationItem = {
         id,
@@ -234,10 +265,50 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     }
   }, [token]);
 
+  const fetchProfiles = useCallback(async () => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/profiles`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const rawMap = (data?.profiles || {}) as Record<string, UserProfile>;
+        const normalized: Record<string, UserProfile> = {};
+        Object.entries(rawMap).forEach(([k, v]) => {
+          if (v && v.username) {
+            normalized[k.toLowerCase()] = {
+              username: v.username,
+              avatarUrl: v.avatarUrl || '',
+              status: v.status || 'online',
+            };
+          }
+        });
+        setProfiles((prev) => ({ ...prev, ...normalized }));
+      }
+    } catch (err) {
+      console.warn('Failed to fetch user profiles:', err);
+    }
+  }, [token]);
+
+  const handleProfileUpdated = useCallback((updated: UserProfile) => {
+    if (!updated?.username) return;
+    setProfiles((prev) => ({
+      ...prev,
+      [updated.username.toLowerCase()]: {
+        username: updated.username,
+        avatarUrl: updated.avatarUrl || '',
+        status: updated.status || 'online',
+      },
+    }));
+  }, []);
+
   useEffect(() => {
     fetchChannels();
     fetchFriendsList();
-  }, [fetchChannels, fetchFriendsList]);
+    fetchProfiles();
+  }, [fetchChannels, fetchFriendsList, fetchProfiles]);
 
   const {
     status,
@@ -258,6 +329,11 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
         setFriendsRefreshTrigger((prev) => prev + 1);
       } else if (msg.type === 'channel_update') {
         fetchChannels();
+      } else if (msg.type === 'profile_update' && msg.data) {
+        const prof = msg.data as UserProfile;
+        if (prof.username) {
+          handleProfileUpdated(prof);
+        }
       } else if (msg.type === 'unread' && msg.room) {
         const isViewingRoom =
           !isFriendsViewActiveRef.current && msg.room === activeChannelIdRef.current;
@@ -402,6 +478,8 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     name: string;
     type: 'text' | 'voice';
     topic: string;
+    isPrivate: boolean;
+    members: string[];
   }): Promise<string | null> => {
     try {
       const res = await fetch(`${getApiBaseUrl()}/api/channels`, {
@@ -426,6 +504,27 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       return null;
     } catch (err: any) {
       return err?.message || 'Network error while creating group.';
+    }
+  };
+
+  const handleInviteMember = async (targetUsername: string): Promise<string | null> => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/channels/invite`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ channelId: activeChannelId, username: targetUsername }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return data.error || data.message || 'Failed to invite friend.';
+      }
+      await fetchChannels();
+      return null;
+    } catch (err: any) {
+      return err?.message || 'Network error while inviting friend.';
     }
   };
 
@@ -478,6 +577,11 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   };
 
   const onlineUsers = users.length > 0 ? users : [activeUsername];
+  const isActiveChannelCreator = Boolean(
+    !activeIsDm &&
+      activeChannel.createdBy &&
+      activeChannel.createdBy.toLowerCase() === activeUsername.toLowerCase()
+  );
 
   return (
     <div className="flex h-screen w-screen bg-canvas text-text-primary overflow-hidden font-sans">
@@ -485,6 +589,10 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       <ChannelSidebar
         channels={channels}
         friends={friends}
+        profiles={profiles}
+        currentProfile={currentProfile}
+        token={token}
+        onProfileUpdated={handleProfileUpdated}
         unreadCounts={unreadCounts}
         activeChannel={activeChannelId}
         onSelectChannel={handleChannelSelect}
@@ -533,6 +641,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
           <FriendsView
             token={token}
             currentUsername={activeUsername}
+            profiles={profiles}
             refreshTrigger={friendsRefreshTrigger}
             onFriendsChanged={fetchFriendsList}
             onOpenChat={(roomId) => {
@@ -571,6 +680,12 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             channelTopic={activeIsDm ? undefined : activeChannel.topic}
             token={token}
             isDm={activeIsDm}
+            isPrivate={!activeIsDm && Boolean(activeChannel.isPrivate)}
+            isChannelCreator={isActiveChannelCreator}
+            channelMembers={activeIsDm ? [] : activeChannel.members || []}
+            friends={friends}
+            profiles={profiles}
+            onInviteMember={handleInviteMember}
             isLoadingHistory={isLoadingHistory}
             messages={messages}
             currentUsername={activeUsername}
@@ -593,13 +708,19 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
 
       {/* Right Member Panel (Toggleable during Chat) */}
       {!isFriendsViewActive && !isCallViewActive && showUserList && (
-        <UserList users={onlineUsers} currentUsername={activeUsername} />
+        <UserList
+          users={onlineUsers}
+          currentUsername={activeUsername}
+          profiles={profiles}
+        />
       )}
 
       {/* Create Group Modal */}
       <CreateChannelModal
         isOpen={isCreateChannelOpen}
         defaultType={createChannelType}
+        friends={friends}
+        profiles={profiles}
         onClose={() => setIsCreateChannelOpen(false)}
         onCreate={handleCreateChannel}
       />

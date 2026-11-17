@@ -1559,3 +1559,265 @@ func TestIncomingDMCallNotifications(t *testing.T) {
 		t.Fatalf("bob expected call_ended from alice, got %+v", bobEnded)
 	}
 }
+
+func TestPrivateChannelsAndInvites(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+	_, aliceToken, _ := store.Register("alice", "password123")
+	_, bobToken, _ := store.Register("bob", "password123")
+	_, charlieToken, _ := store.Register("charlie", "password123")
+
+	// Bob & Charlie connect to "random"
+	bobWS := connectWS(t, server.URL, "random", bobToken)
+	defer bobWS.Close()
+	_ = readNextMessage(t, bobWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobWS, 2*time.Second) // users
+
+	charlieWS := connectWS(t, server.URL, "random", charlieToken)
+	defer charlieWS.Close()
+	_ = readNextMessage(t, charlieWS, 2*time.Second) // join
+	_ = readNextMessage(t, charlieWS, 2*time.Second) // users
+	_ = readNextMessage(t, bobWS, 2*time.Second)     // charlie join
+	_ = readNextMessage(t, bobWS, 2*time.Second)     // users
+
+	// 1. Alice creates a private group
+	w := doJSONRequest(handler, "POST", "/api/channels", map[string]any{
+		"name":      "Secret Club",
+		"type":      "text",
+		"topic":     "Invite-only room",
+		"isPrivate": true,
+	}, aliceToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 creating private channel, got %d (%s)", w.Code, w.Body.String())
+	}
+	var createRes struct {
+		Channel Channel `json:"channel"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &createRes)
+	if !createRes.Channel.IsPrivate || len(createRes.Channel.Members) != 1 || createRes.Channel.Members[0] != "alice" {
+		t.Fatalf("unexpected private channel: %+v", createRes.Channel)
+	}
+
+	// Visibility isolation: Alice sees 3 channels, Bob & Charlie see only 2 defaults
+	hasChannel := func(tok, id string) bool {
+		resp := doJSONRequest(handler, "GET", "/api/channels", nil, tok)
+		var res struct {
+			Channels []Channel `json:"channels"`
+		}
+		_ = json.Unmarshal(resp.Body.Bytes(), &res)
+		for _, ch := range res.Channels {
+			if ch.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasChannel(aliceToken, "secret-club") {
+		t.Fatalf("alice should see secret-club")
+	}
+	if hasChannel(bobToken, "secret-club") || hasChannel(charlieToken, "secret-club") {
+		t.Fatalf("bob and charlie should NOT see secret-club before invite")
+	}
+
+	// 2. Non-member Bob gets 403 on /ws, /api/messages, and /api/messages/search
+	_, wsResp, err := dialWSRaw(server.URL, "secret-club", "", bobToken)
+	if err == nil || wsResp == nil || wsResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-member bob on private /ws, got err=%v resp=%v", err, wsResp)
+	}
+	w = doJSONRequest(handler, "GET", "/api/messages?room=secret-club", nil, bobToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-member bob on /api/messages, got %d", w.Code)
+	}
+	w = doJSONRequest(handler, "GET", "/api/messages/search?room=secret-club&q=hi", nil, bobToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-member bob on /api/messages/search, got %d", w.Code)
+	}
+
+	// 3. Alice joins secret-club and posts a message -> non-members must NOT receive unread notification
+	aliceWS := connectWS(t, server.URL, "secret-club", aliceToken)
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	if err := aliceWS.WriteJSON(Message{Type: "chat", Content: "Top secret note"}); err != nil {
+		t.Fatalf("write private msg failed: %v", err)
+	}
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // echo
+
+	// Verify non-member Charlie (in random) does NOT receive unread/update for private channel
+	_ = charlieWS.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if _, raw, err := charlieWS.ReadMessage(); err == nil {
+		t.Fatalf("non-member charlie must NOT receive unread/update for private channel, got %s", string(raw))
+	}
+
+	// 4. Invite validation & permissions
+	// Non-creator Bob tries to invite Charlie -> 403
+	w = doJSONRequest(handler, "POST", "/api/channels/invite", map[string]string{
+		"channelId": "secret-club",
+		"username":  "charlie",
+	}, bobToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-creator invite, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// Inviting to public channel -> 400
+	w = doJSONRequest(handler, "POST", "/api/channels/invite", map[string]string{
+		"channelId": "random",
+		"username":  "bob",
+	}, aliceToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for inviting to public channel, got %d", w.Code)
+	}
+
+	// Inviting non-existent user -> 404
+	w = doJSONRequest(handler, "POST", "/api/channels/invite", map[string]string{
+		"channelId": "secret-club",
+		"username":  "nobody",
+	}, aliceToken)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for inviting nonexistent user, got %d", w.Code)
+	}
+
+	// 5. Alice invites Bob -> 200 OK + Bob receives channel_update + gains full access
+	w = doJSONRequest(handler, "POST", "/api/channels/invite", map[string]string{
+		"channelId": "secret-club",
+		"username":  "bob",
+	}, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for creator inviting bob, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	bobUpdate := readNextMessage(t, bobWS, 2*time.Second)
+	if bobUpdate.Type != "channel_update" {
+		t.Fatalf("bob expected channel_update after invite, got %+v", bobUpdate)
+	}
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // alice channel_update
+
+	if !hasChannel(bobToken, "secret-club") {
+		t.Fatalf("bob should now see secret-club in GET /api/channels")
+	}
+
+	w = doJSONRequest(handler, "GET", "/api/messages?room=secret-club", nil, bobToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("invited bob expected 200 on /api/messages, got %d", w.Code)
+	}
+
+	bobPrivateWS := connectWS(t, server.URL, "secret-club", bobToken)
+	defer bobPrivateWS.Close()
+	_ = readNextMessage(t, bobPrivateWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobPrivateWS, 2*time.Second) // users
+
+	// Charlie is still NOT invited -> still 403
+	w = doJSONRequest(handler, "GET", "/api/messages?room=secret-club", nil, charlieToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("uninvited charlie should still get 403, got %d", w.Code)
+	}
+}
+
+func TestUserProfileAndStatus(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+	_, aliceToken, _ := store.Register("alice", "password123")
+	_, bobToken, _ := store.Register("bob", "password123")
+
+	bobWS := connectWS(t, server.URL, "random", bobToken)
+	defer bobWS.Close()
+	_ = readNextMessage(t, bobWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobWS, 2*time.Second) // users
+
+	// 1. Validation failures
+	w := doJSONRequest(handler, "PUT", "/api/profile", map[string]string{
+		"status": "invisible",
+	}, aliceToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid status, got %d", w.Code)
+	}
+
+	for _, badURL := range []string{"https://evil.com/x.png", "/api/uploads/../etc/passwd", "javascript:alert(1)"} {
+		w = doJSONRequest(handler, "PUT", "/api/profile", map[string]string{
+			"avatarUrl": badURL,
+		}, aliceToken)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid avatarUrl %q, got %d", badURL, w.Code)
+		}
+	}
+
+	// 2. Valid profile update -> 200 + profile_update broadcast
+	w = doJSONRequest(handler, "PUT", "/api/profile", map[string]string{
+		"avatarUrl": "/api/uploads/alice-avatar.png",
+		"status":    "dnd",
+	}, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid profile update, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	profUpdate := readNextMessage(t, bobWS, 2*time.Second)
+	if profUpdate.Type != "profile_update" || profUpdate.Sender != "alice" {
+		t.Fatalf("bob expected profile_update from alice, got %+v", profUpdate)
+	}
+
+	// 3. Check /api/auth/me reflects updated avatarUrl and status
+	w = doJSONRequest(handler, "GET", "/api/auth/me", nil, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/auth/me, got %d", w.Code)
+	}
+	var meRes struct {
+		User UserProfile `json:"user"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &meRes)
+	if meRes.User.AvatarURL != "/api/uploads/alice-avatar.png" || meRes.User.Status != "dnd" {
+		t.Fatalf("unexpected /api/auth/me profile: %+v", meRes.User)
+	}
+
+	// 4. Check /api/profiles map
+	w = doJSONRequest(handler, "GET", "/api/profiles", nil, bobToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/profiles, got %d", w.Code)
+	}
+	var profilesRes struct {
+		Profiles map[string]UserProfile `json:"profiles"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &profilesRes)
+	if profilesRes.Profiles["alice"].AvatarURL != "/api/uploads/alice-avatar.png" || profilesRes.Profiles["alice"].Status != "dnd" {
+		t.Fatalf("unexpected alice entry in /api/profiles: %+v", profilesRes.Profiles["alice"])
+	}
+	if profilesRes.Profiles["bob"].Status != "online" {
+		t.Fatalf("expected default online status for bob, got %+v", profilesRes.Profiles["bob"])
+	}
+
+	// 5. Check /api/friends includes avatarUrl and status
+	_ = store.SendFriendRequest("alice", "bob")
+	_ = store.AcceptFriendRequest("bob", "alice")
+	w = doJSONRequest(handler, "GET", "/api/friends", nil, bobToken)
+	var fData FriendsData
+	_ = json.Unmarshal(w.Body.Bytes(), &fData)
+	if len(fData.Friends) != 1 || fData.Friends[0].AvatarURL != "/api/uploads/alice-avatar.png" || fData.Friends[0].Status != "dnd" {
+		t.Fatalf("expected alice avatar & status in /api/friends, got %+v", fData.Friends)
+	}
+
+	// 6. Clearing avatarUrl and switching status to "away"
+	w = doJSONRequest(handler, "PUT", "/api/profile", map[string]string{
+		"avatarUrl": "",
+		"status":    "away",
+	}, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 clearing avatar and setting away, got %d", w.Code)
+	}
+	_ = readNextMessage(t, bobWS, 2*time.Second) // profile_update
+
+	w = doJSONRequest(handler, "GET", "/api/auth/me", nil, aliceToken)
+	_ = json.Unmarshal(w.Body.Bytes(), &meRes)
+	if meRes.User.AvatarURL != "" || meRes.User.Status != "away" {
+		t.Fatalf("expected cleared avatar and away status, got %+v", meRes.User)
+	}
+}

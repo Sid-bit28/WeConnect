@@ -55,8 +55,13 @@ func (p *PostgresStore) autoMigrate(ctx context.Context) error {
 		id TEXT PRIMARY KEY,
 		username TEXT UNIQUE NOT NULL,
 		password_hash TEXT NOT NULL,
+		avatar_url TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'online',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);
+
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT NOT NULL DEFAULT '';
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'online';
 
 	CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 
@@ -103,8 +108,13 @@ func (p *PostgresStore) autoMigrate(ctx context.Context) error {
 		type TEXT NOT NULL,
 		topic TEXT NOT NULL DEFAULT '',
 		created_by TEXT NOT NULL DEFAULT 'system',
+		is_private BOOLEAN NOT NULL DEFAULT FALSE,
+		members JSONB NOT NULL DEFAULT '[]'::jsonb,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);
+
+	ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE;
+	ALTER TABLE channels ADD COLUMN IF NOT EXISTS members JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 	CREATE INDEX IF NOT EXISTS idx_channels_created_at ON channels(created_at ASC);
 	`
@@ -164,13 +174,14 @@ func (p *PostgresStore) Register(username, password string) (*User, string, erro
 		ID:           normUser,
 		Username:     normUser,
 		PasswordHash: pwHash,
+		Status:       "online",
 		CreatedAt:    time.Now().UTC(),
 	}
 
 	// Insert user
 	_, err = p.pool.Exec(ctx,
-		`INSERT INTO users (id, username, password_hash, created_at) VALUES ($1, $2, $3, $4)`,
-		user.ID, user.Username, user.PasswordHash, user.CreatedAt,
+		`INSERT INTO users (id, username, password_hash, avatar_url, status, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+		user.ID, user.Username, user.PasswordHash, "", "online", user.CreatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -203,12 +214,13 @@ func (p *PostgresStore) Login(username, password string) (*User, string, error) 
 
 	user := &User{}
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, password_hash, created_at FROM users WHERE username = $1`,
+		`SELECT id, username, password_hash, COALESCE(avatar_url, ''), COALESCE(status, 'online'), created_at FROM users WHERE username = $1`,
 		normUser,
-	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.CreatedAt)
+	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.AvatarURL, &user.Status, &user.CreatedAt)
 	if err != nil {
 		return nil, "", errors.New("Invalid username or password")
 	}
+	user.Status = normalizeUserStatus(user.Status)
 
 	if !checkPassword(user.PasswordHash, password) {
 		return nil, "", errors.New("Invalid username or password")
@@ -236,18 +248,19 @@ func (p *PostgresStore) AuthenticateToken(token string) (*User, error) {
 
 	user := &User{}
 	err := p.pool.QueryRow(ctx,
-		`SELECT u.id, u.username, u.password_hash, u.created_at
+		`SELECT u.id, u.username, u.password_hash, COALESCE(u.avatar_url, ''), COALESCE(u.status, 'online'), u.created_at
 		 FROM sessions s
 		 JOIN users u ON s.username = u.username
 		 WHERE s.token = $1`,
 		token,
-	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.CreatedAt)
+	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.AvatarURL, &user.Status, &user.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errors.New("Invalid or expired session token")
 		}
 		return nil, fmt.Errorf("auth query failed: %w", err)
 	}
+	user.Status = normalizeUserStatus(user.Status)
 
 	return user, nil
 }
@@ -385,7 +398,13 @@ func (p *PostgresStore) GetFriends(username string, isOnline func(string) bool) 
 	defer cancel()
 
 	rows, err := p.pool.Query(ctx,
-		`SELECT requester, receiver, status, created_at FROM friendships WHERE requester = $1 OR receiver = $1`,
+		`SELECT f.requester, f.receiver, f.status, f.created_at,
+		        COALESCE(u1.avatar_url, ''), COALESCE(u1.status, 'online'),
+		        COALESCE(u2.avatar_url, ''), COALESCE(u2.status, 'online')
+		 FROM friendships f
+		 LEFT JOIN users u1 ON f.requester = u1.username
+		 LEFT JOIN users u2 ON f.receiver = u2.username
+		 WHERE f.requester = $1 OR f.receiver = $1`,
 		normUser,
 	)
 	if err != nil {
@@ -397,18 +416,25 @@ func (p *PostgresStore) GetFriends(username string, isOnline func(string) bool) 
 	for rows.Next() {
 		var req, rec, status string
 		var createdAt time.Time
-		if err := rows.Scan(&req, &rec, &status, &createdAt); err != nil {
+		var reqAvatar, reqStatus, recAvatar, recStatus string
+		if err := rows.Scan(&req, &rec, &status, &createdAt, &reqAvatar, &reqStatus, &recAvatar, &recStatus); err != nil {
 			continue
 		}
 
 		if status == "accepted" {
 			friendName := rec
+			friendAvatar := recAvatar
+			friendStatus := recStatus
 			if rec == normUser {
 				friendName = req
+				friendAvatar = reqAvatar
+				friendStatus = reqStatus
 			}
 			res.Friends = append(res.Friends, FriendEntry{
-				Username: friendName,
-				Online:   isOnline(friendName),
+				Username:  friendName,
+				Online:    isOnline(friendName),
+				AvatarURL: friendAvatar,
+				Status:    normalizeUserStatus(friendStatus),
 			})
 		} else if status == "pending" {
 			if rec == normUser {
@@ -672,7 +698,9 @@ func (p *PostgresStore) GetChannels() ([]Channel, error) {
 	defer cancel()
 
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, name, type, topic, created_by, created_at FROM channels ORDER BY created_at ASC, id ASC`,
+		`SELECT id, name, type, topic, created_by, COALESCE(is_private, FALSE), COALESCE(members, '[]'::jsonb), created_at
+		 FROM channels
+		 ORDER BY created_at ASC, id ASC`,
 	)
 	if err != nil {
 		return nil, err
@@ -682,10 +710,53 @@ func (p *PostgresStore) GetChannels() ([]Channel, error) {
 	res := make([]Channel, 0)
 	for rows.Next() {
 		var ch Channel
-		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Type, &ch.Topic, &ch.CreatedBy, &ch.CreatedAt); err != nil {
+		var membersBytes []byte
+		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Type, &ch.Topic, &ch.CreatedBy, &ch.IsPrivate, &membersBytes, &ch.CreatedAt); err != nil {
 			continue
 		}
+		if len(membersBytes) > 0 && ch.IsPrivate {
+			_ = json.Unmarshal(membersBytes, &ch.Members)
+		}
 		res = append(res, ch)
+	}
+	return res, nil
+}
+
+func (p *PostgresStore) GetChannel(id string) (*Channel, error) {
+	normID := strings.ToLower(strings.TrimSpace(id))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var ch Channel
+	var membersBytes []byte
+	err := p.pool.QueryRow(ctx,
+		`SELECT id, name, type, topic, created_by, COALESCE(is_private, FALSE), COALESCE(members, '[]'::jsonb), created_at
+		 FROM channels
+		 WHERE id = $1`,
+		normID,
+	).Scan(&ch.ID, &ch.Name, &ch.Type, &ch.Topic, &ch.CreatedBy, &ch.IsPrivate, &membersBytes, &ch.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrChannelNotFound
+		}
+		return nil, err
+	}
+	if len(membersBytes) > 0 && ch.IsPrivate {
+		_ = json.Unmarshal(membersBytes, &ch.Members)
+	}
+	return &ch, nil
+}
+
+func (p *PostgresStore) GetChannelsForUser(username string) ([]Channel, error) {
+	all, err := p.GetChannels()
+	if err != nil {
+		return nil, err
+	}
+	res := make([]Channel, 0, len(all))
+	for _, ch := range all {
+		if !ch.IsPrivate || isChannelMember(&ch, username) {
+			res = append(res, ch)
+		}
 	}
 	return res, nil
 }
@@ -697,10 +768,17 @@ func (p *PostgresStore) CreateChannel(ch Channel) error {
 	if ch.CreatedAt.IsZero() {
 		ch.CreatedAt = time.Now().UTC()
 	}
+	if ch.IsPrivate {
+		ch.Members = normalizeMembers(ch.CreatedBy, ch.Members)
+	} else {
+		ch.Members = []string{}
+	}
+	membersBytes, _ := json.Marshal(ch.Members)
 
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO channels (id, name, type, topic, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-		ch.ID, ch.Name, ch.Type, ch.Topic, ch.CreatedBy, ch.CreatedAt,
+		`INSERT INTO channels (id, name, type, topic, created_by, is_private, members, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		ch.ID, ch.Name, ch.Type, ch.Topic, ch.CreatedBy, ch.IsPrivate, membersBytes, ch.CreatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -709,6 +787,40 @@ func (p *PostgresStore) CreateChannel(ch Channel) error {
 		return err
 	}
 	return nil
+}
+
+func (p *PostgresStore) InviteToChannel(channelID, requestingUser, targetUser string) (*Channel, error) {
+	normID := strings.ToLower(strings.TrimSpace(channelID))
+	normTarget := normalizeUsername(targetUser)
+
+	ch, err := p.GetChannel(normID)
+	if err != nil {
+		return nil, err
+	}
+	if !ch.IsPrivate {
+		return nil, ErrChannelNotPrivate
+	}
+	if !strings.EqualFold(ch.CreatedBy, requestingUser) {
+		return nil, fmt.Errorf("%w: Only the creator of this room can invite members", ErrChannelForbidden)
+	}
+	if !p.UserExists(normTarget) {
+		return nil, ErrUserNotFound
+	}
+
+	ch.Members = normalizeMembers(ch.CreatedBy, append(ch.Members, normTarget))
+	membersBytes, _ := json.Marshal(ch.Members)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = p.pool.Exec(ctx,
+		`UPDATE channels SET members = $1 WHERE id = $2`,
+		membersBytes, normID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return ch, nil
 }
 
 func (p *PostgresStore) DeleteChannel(id, requestingUser string) error {
@@ -739,6 +851,75 @@ func (p *PostgresStore) DeleteChannel(id, requestingUser string) error {
 		return ErrChannelNotFound
 	}
 	return nil
+}
+
+func (p *PostgresStore) GetProfile(username string) (UserProfile, error) {
+	normUser := normalizeUsername(username)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var prof UserProfile
+	err := p.pool.QueryRow(ctx,
+		`SELECT username, COALESCE(avatar_url, ''), COALESCE(status, 'online') FROM users WHERE username = $1`,
+		normUser,
+	).Scan(&prof.Username, &prof.AvatarURL, &prof.Status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return UserProfile{}, ErrUserNotFound
+		}
+		return UserProfile{}, err
+	}
+	prof.Status = normalizeUserStatus(prof.Status)
+	return prof, nil
+}
+
+func (p *PostgresStore) UpdateProfile(username string, avatarURL *string, status *string) (UserProfile, error) {
+	prof, err := p.GetProfile(username)
+	if err != nil {
+		return UserProfile{}, err
+	}
+	if avatarURL != nil {
+		prof.AvatarURL = strings.TrimSpace(*avatarURL)
+	}
+	if status != nil {
+		prof.Status = normalizeUserStatus(*status)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = p.pool.Exec(ctx,
+		`UPDATE users SET avatar_url = $1, status = $2 WHERE username = $3`,
+		prof.AvatarURL, prof.Status, prof.Username,
+	)
+	if err != nil {
+		return UserProfile{}, err
+	}
+	return prof, nil
+}
+
+func (p *PostgresStore) GetAllProfiles() (map[string]UserProfile, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT username, COALESCE(avatar_url, ''), COALESCE(status, 'online') FROM users`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	res := make(map[string]UserProfile)
+	for rows.Next() {
+		var prof UserProfile
+		if err := rows.Scan(&prof.Username, &prof.AvatarURL, &prof.Status); err != nil {
+			continue
+		}
+		prof.Status = normalizeUserStatus(prof.Status)
+		res[prof.Username] = prof
+	}
+	return res, nil
 }
 
 func (p *PostgresStore) Close() error {

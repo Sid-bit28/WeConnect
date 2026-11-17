@@ -50,19 +50,27 @@ func (h *Hub) SetStore(store Store) {
 
 // isAuthorizedForRoom checks whether username is allowed to access the room.
 // Deterministic DM rooms ("dm:<u1>:<u2>") are restricted strictly to u1 and u2.
-func isAuthorizedForRoom(room, username string) bool {
-	if !strings.HasPrefix(room, "dm:") {
-		return true
+// Private channels are restricted strictly to their creator and invited members.
+func isAuthorizedForRoom(room, username string, store Store) bool {
+	if strings.HasPrefix(room, "dm:") {
+		parts := strings.Split(room, ":")
+		if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+			return false
+		}
+		normUser := strings.ToLower(strings.TrimSpace(username))
+		if normUser == "" {
+			return false
+		}
+		return normUser == strings.ToLower(parts[1]) || normUser == strings.ToLower(parts[2])
 	}
-	parts := strings.Split(room, ":")
-	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
-		return false
+
+	if store != nil {
+		if ch, err := store.GetChannel(room); err == nil && ch != nil && ch.IsPrivate {
+			return isChannelMember(ch, username)
+		}
 	}
-	normUser := strings.ToLower(strings.TrimSpace(username))
-	if normUser == "" {
-		return false
-	}
-	return normUser == strings.ToLower(parts[1]) || normUser == strings.ToLower(parts[2])
+
+	return true
 }
 
 // Register adds a client to their room, announces their join, and broadcasts the current user list.
@@ -369,11 +377,18 @@ func (h *Hub) NotifyUserIfNotInRoom(username, roomName string, msg Message) bool
 	return sent
 }
 
-// NotifyOtherRooms sends a message to all clients currently viewing rooms other than roomName,
-// excluding connections belonging to excludeSender.
+// NotifyOtherRooms sends a message to all authorized clients currently viewing rooms other than roomName,
+// excluding connections belonging to excludeSender. For private channels, only members are notified.
 func (h *Hub) NotifyOtherRooms(roomName, excludeSender string, msg Message) {
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
+	}
+
+	var privateChannel *Channel
+	if store := h.getStore(); store != nil {
+		if ch, err := store.GetChannel(roomName); err == nil && ch != nil && ch.IsPrivate {
+			privateChannel = ch
+		}
 	}
 
 	data, err := json.Marshal(msg)
@@ -391,6 +406,9 @@ func (h *Hub) NotifyOtherRooms(roomName, excludeSender string, msg Message) {
 		}
 		for c := range room.Clients {
 			if normExclude != "" && strings.ToLower(c.username) == normExclude {
+				continue
+			}
+			if privateChannel != nil && !isChannelMember(privateChannel, c.username) {
 				continue
 			}
 			targets = append(targets, c)

@@ -20,7 +20,28 @@ type User struct {
 	ID           string    `json:"id"`
 	Username     string    `json:"username"`
 	PasswordHash string    `json:"passwordHash"`
+	AvatarURL    string    `json:"avatarUrl,omitempty"`
+	Status       string    `json:"status,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// UserProfile represents public user profile & presence metadata.
+type UserProfile struct {
+	Username  string `json:"username"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
+	Status    string `json:"status"` // "online" | "away" | "dnd"
+}
+
+func isValidUserStatus(s string) bool {
+	return s == "online" || s == "away" || s == "dnd"
+}
+
+func normalizeUserStatus(s string) string {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	if isValidUserStatus(lower) {
+		return lower
+	}
+	return "online"
 }
 
 // Friendship represents a relationship between two users.
@@ -33,11 +54,13 @@ type Friendship struct {
 }
 
 var (
-	ErrChannelExists    = errors.New("Channel already exists")
-	ErrChannelNotFound  = errors.New("Channel not found")
-	ErrChannelForbidden = errors.New("Forbidden")
-	ErrMessageNotFound  = errors.New("Message not found")
-	ErrMessageForbidden = errors.New("Forbidden")
+	ErrChannelExists     = errors.New("Channel already exists")
+	ErrChannelNotFound   = errors.New("Channel not found")
+	ErrChannelForbidden  = errors.New("Forbidden")
+	ErrChannelNotPrivate = errors.New("Channel is not private")
+	ErrUserNotFound      = errors.New("User not found")
+	ErrMessageNotFound   = errors.New("Message not found")
+	ErrMessageForbidden  = errors.New("Forbidden")
 )
 
 // Channel represents a text or voice channel in the workspace.
@@ -47,7 +70,45 @@ type Channel struct {
 	Type      string    `json:"type"` // "text" | "voice"
 	Topic     string    `json:"topic,omitempty"`
 	CreatedBy string    `json:"createdBy,omitempty"`
+	IsPrivate bool      `json:"isPrivate,omitempty"`
+	Members   []string  `json:"members,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+func normalizeMembers(creator string, rawMembers []string) []string {
+	seen := make(map[string]bool)
+	res := make([]string, 0, len(rawMembers)+1)
+	if c := normalizeUsername(creator); c != "" {
+		seen[c] = true
+		res = append(res, c)
+	}
+	for _, m := range rawMembers {
+		nm := normalizeUsername(m)
+		if nm != "" && !seen[nm] {
+			seen[nm] = true
+			res = append(res, nm)
+		}
+	}
+	return res
+}
+
+func isChannelMember(ch *Channel, username string) bool {
+	if ch == nil || !ch.IsPrivate {
+		return true
+	}
+	norm := normalizeUsername(username)
+	if norm == "" {
+		return false
+	}
+	if strings.EqualFold(ch.CreatedBy, norm) {
+		return true
+	}
+	for _, m := range ch.Members {
+		if strings.EqualFold(m, norm) {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultChannels() []Channel {
@@ -109,8 +170,14 @@ type Store interface {
 	ToggleReaction(msgID, room, username, emoji string) (*Message, error)
 	SearchMessages(room, query string, limit int) ([]Message, error)
 	GetChannels() ([]Channel, error)
+	GetChannel(id string) (*Channel, error)
+	GetChannelsForUser(username string) ([]Channel, error)
 	CreateChannel(ch Channel) error
+	InviteToChannel(channelID, requestingUser, targetUser string) (*Channel, error)
 	DeleteChannel(id, requestingUser string) error
+	GetProfile(username string) (UserProfile, error)
+	UpdateProfile(username string, avatarURL *string, status *string) (UserProfile, error)
+	GetAllProfiles() (map[string]UserProfile, error)
 	Close() error
 }
 
@@ -311,6 +378,7 @@ func (s *FileStore) Register(username, password string) (*User, string, error) {
 		ID:           normUser,
 		Username:     normUser,
 		PasswordHash: pwHash,
+		Status:       "online",
 		CreatedAt:    time.Now().UTC(),
 	}
 	s.data.Users[normUser] = user
@@ -484,8 +552,10 @@ func (s *FileStore) RemoveFriend(currentUser, friendUser string) error {
 
 // FriendEntry represents a friend in the friends list response.
 type FriendEntry struct {
-	Username string `json:"username"`
-	Online   bool   `json:"online"`
+	Username  string `json:"username"`
+	Online    bool   `json:"online"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
+	Status    string `json:"status,omitempty"`
 }
 
 // RequestEntry represents an incoming or outgoing pending request.
@@ -516,18 +586,25 @@ func (s *FileStore) GetFriends(username string, isOnline func(string) bool) Frie
 		Outgoing: make([]RequestEntry, 0),
 	}
 
+	buildFriendEntry := func(friendName string) FriendEntry {
+		entry := FriendEntry{
+			Username: friendName,
+			Online:   isOnline(friendName),
+			Status:   "online",
+		}
+		if u, ok := s.data.Users[friendName]; ok && u != nil {
+			entry.AvatarURL = u.AvatarURL
+			entry.Status = normalizeUserStatus(u.Status)
+		}
+		return entry
+	}
+
 	for _, f := range s.data.Friendships {
 		if f.Status == "accepted" {
 			if f.Requester == normUser {
-				res.Friends = append(res.Friends, FriendEntry{
-					Username: f.Receiver,
-					Online:   isOnline(f.Receiver),
-				})
+				res.Friends = append(res.Friends, buildFriendEntry(f.Receiver))
 			} else if f.Receiver == normUser {
-				res.Friends = append(res.Friends, FriendEntry{
-					Username: f.Requester,
-					Online:   isOnline(f.Requester),
-				})
+				res.Friends = append(res.Friends, buildFriendEntry(f.Requester))
 			}
 		} else if f.Status == "pending" {
 			if f.Receiver == normUser {
@@ -752,12 +829,50 @@ func (s *FileStore) SearchMessages(room, query string, limit int) ([]Message, er
 	return res, nil
 }
 
+func cloneChannel(ch Channel) Channel {
+	cp := ch
+	if len(ch.Members) > 0 {
+		cp.Members = make([]string, len(ch.Members))
+		copy(cp.Members, ch.Members)
+	}
+	return cp
+}
+
 // GetChannels returns all configured channels.
 func (s *FileStore) GetChannels() ([]Channel, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	res := make([]Channel, len(s.data.Channels))
-	copy(res, s.data.Channels)
+	for i, ch := range s.data.Channels {
+		res[i] = cloneChannel(ch)
+	}
+	return res, nil
+}
+
+// GetChannel retrieves a single channel by ID.
+func (s *FileStore) GetChannel(id string) (*Channel, error) {
+	normID := strings.ToLower(strings.TrimSpace(id))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ch := range s.data.Channels {
+		if ch.ID == normID {
+			cp := cloneChannel(ch)
+			return &cp, nil
+		}
+	}
+	return nil, ErrChannelNotFound
+}
+
+// GetChannelsForUser returns all public channels plus private channels the user belongs to.
+func (s *FileStore) GetChannelsForUser(username string) ([]Channel, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	res := make([]Channel, 0, len(s.data.Channels))
+	for _, ch := range s.data.Channels {
+		if !ch.IsPrivate || isChannelMember(&ch, username) {
+			res = append(res, cloneChannel(ch))
+		}
+	}
 	return res, nil
 }
 
@@ -770,11 +885,53 @@ func (s *FileStore) CreateChannel(ch Channel) error {
 			return ErrChannelExists
 		}
 	}
+	if ch.IsPrivate {
+		ch.Members = normalizeMembers(ch.CreatedBy, ch.Members)
+	} else {
+		ch.Members = nil
+	}
 	if ch.CreatedAt.IsZero() {
 		ch.CreatedAt = time.Now().UTC()
 	}
-	s.data.Channels = append(s.data.Channels, ch)
+	s.data.Channels = append(s.data.Channels, cloneChannel(ch))
 	return s.saveLocked()
+}
+
+// InviteToChannel adds targetUser to a private channel if requestingUser is its creator.
+func (s *FileStore) InviteToChannel(channelID, requestingUser, targetUser string) (*Channel, error) {
+	normID := strings.ToLower(strings.TrimSpace(channelID))
+	normTarget := normalizeUsername(targetUser)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idx := -1
+	for i, ch := range s.data.Channels {
+		if ch.ID == normID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return nil, ErrChannelNotFound
+	}
+	ch := &s.data.Channels[idx]
+	if !ch.IsPrivate {
+		return nil, ErrChannelNotPrivate
+	}
+	if !strings.EqualFold(ch.CreatedBy, requestingUser) {
+		return nil, fmt.Errorf("%w: Only the creator of this room can invite members", ErrChannelForbidden)
+	}
+	if _, exists := s.data.Users[normTarget]; !exists {
+		return nil, ErrUserNotFound
+	}
+
+	ch.Members = normalizeMembers(ch.CreatedBy, append(ch.Members, normTarget))
+	if err := s.saveLocked(); err != nil {
+		return nil, err
+	}
+	cp := cloneChannel(*ch)
+	return &cp, nil
 }
 
 // DeleteChannel deletes a channel by ID only if requestingUser is its creator.
@@ -801,6 +958,65 @@ func (s *FileStore) DeleteChannel(id, requestingUser string) error {
 	}
 	s.data.Channels = append(s.data.Channels[:idx], s.data.Channels[idx+1:]...)
 	return s.saveLocked()
+}
+
+// GetProfile retrieves a user's public profile.
+func (s *FileStore) GetProfile(username string) (UserProfile, error) {
+	normUser := normalizeUsername(username)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	u, exists := s.data.Users[normUser]
+	if !exists {
+		return UserProfile{}, ErrUserNotFound
+	}
+	return UserProfile{
+		Username:  u.Username,
+		AvatarURL: u.AvatarURL,
+		Status:    normalizeUserStatus(u.Status),
+	}, nil
+}
+
+// UpdateProfile updates a user's avatarUrl and/or presence status.
+func (s *FileStore) UpdateProfile(username string, avatarURL *string, status *string) (UserProfile, error) {
+	normUser := normalizeUsername(username)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, exists := s.data.Users[normUser]
+	if !exists {
+		return UserProfile{}, ErrUserNotFound
+	}
+	if avatarURL != nil {
+		u.AvatarURL = strings.TrimSpace(*avatarURL)
+	}
+	if status != nil {
+		u.Status = normalizeUserStatus(*status)
+	}
+	if err := s.saveLocked(); err != nil {
+		return UserProfile{}, err
+	}
+	return UserProfile{
+		Username:  u.Username,
+		AvatarURL: u.AvatarURL,
+		Status:    normalizeUserStatus(u.Status),
+	}, nil
+}
+
+// GetAllProfiles returns a map of username -> UserProfile for all registered users.
+func (s *FileStore) GetAllProfiles() (map[string]UserProfile, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	res := make(map[string]UserProfile, len(s.data.Users))
+	for _, u := range s.data.Users {
+		if u == nil {
+			continue
+		}
+		res[u.Username] = UserProfile{
+			Username:  u.Username,
+			AvatarURL: u.AvatarURL,
+			Status:    normalizeUserStatus(u.Status),
+		}
+	}
+	return res, nil
 }
 
 // Close is a no-op for FileStore.

@@ -111,7 +111,7 @@ func wsHandler(hub *Hub, store Store) http.HandlerFunc {
 			return
 		}
 
-		if !isAuthorizedForRoom(room, authUser.Username) {
+		if !isAuthorizedForRoom(room, authUser.Username, store) {
 			http.Error(w, "Forbidden: not authorized to access this room", http.StatusForbidden)
 			return
 		}
@@ -135,6 +135,14 @@ func wsHandler(hub *Hub, store Store) http.HandlerFunc {
 type AuthRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+func userToPublicMap(user *User) map[string]any {
+	return map[string]any{
+		"username":  user.Username,
+		"avatarUrl": user.AvatarURL,
+		"status":    normalizeUserStatus(user.Status),
+	}
 }
 
 func registerHandler(store Store) http.HandlerFunc {
@@ -162,9 +170,7 @@ func registerHandler(store Store) http.HandlerFunc {
 
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"token": token,
-			"user": map[string]any{
-				"username": user.Username,
-			},
+			"user":  userToPublicMap(user),
 		})
 	}
 }
@@ -190,9 +196,7 @@ func loginHandler(store Store) http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token": token,
-			"user": map[string]any{
-				"username": user.Username,
-			},
+			"user":  userToPublicMap(user),
 		})
 	}
 }
@@ -205,9 +209,7 @@ func meHandler(store Store) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"user": map[string]any{
-				"username": user.Username,
-			},
+			"user": userToPublicMap(user),
 		})
 	})
 }
@@ -451,19 +453,38 @@ func iceConfigHandler() http.HandlerFunc {
 	}
 }
 
-// --- Custom Channels Handler ---
+// --- Custom & Private Channels Handlers ---
 
 type CreateChannelRequest struct {
-	Name  string `json:"name"`
-	Type  string `json:"type"`
-	Topic string `json:"topic"`
+	Name      string   `json:"name"`
+	Type      string   `json:"type"`
+	Topic     string   `json:"topic"`
+	IsPrivate bool     `json:"isPrivate"`
+	Members   []string `json:"members"`
+}
+
+type InviteChannelRequest struct {
+	ChannelID string `json:"channelId"`
+	Username  string `json:"username"`
+}
+
+func notifyChannelMembers(hub *Hub, members []string, msg Message) {
+	seen := make(map[string]bool)
+	for _, m := range members {
+		nm := normalizeUsername(m)
+		if nm == "" || seen[nm] {
+			continue
+		}
+		seen[nm] = true
+		hub.NotifyUser(nm, msg)
+	}
 }
 
 func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
 	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		switch r.Method {
 		case http.MethodGet:
-			channels, err := store.GetChannels()
+			channels, err := store.GetChannelsForUser(user.Username)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "Failed to retrieve channels")
 				return
@@ -502,12 +523,26 @@ func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
 				topic = topic[:200]
 			}
 
+			var members []string
+			if req.IsPrivate {
+				validRequested := make([]string, 0, len(req.Members))
+				for _, m := range req.Members {
+					nm := normalizeUsername(m)
+					if nm != "" && store.UserExists(nm) {
+						validRequested = append(validRequested, nm)
+					}
+				}
+				members = normalizeMembers(user.Username, validRequested)
+			}
+
 			ch := Channel{
 				ID:        id,
 				Name:      name,
 				Type:      chType,
 				Topic:     topic,
 				CreatedBy: user.Username,
+				IsPrivate: req.IsPrivate,
+				Members:   members,
 				CreatedAt: time.Now().UTC(),
 			}
 
@@ -520,13 +555,18 @@ func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
 				return
 			}
 
-			hub.BroadcastAll(Message{
+			updateMsg := Message{
 				Type:      "channel_update",
 				Sender:    user.Username,
 				Content:   "Channel created",
 				Data:      ch,
 				Timestamp: time.Now().UnixMilli(),
-			})
+			}
+			if ch.IsPrivate {
+				notifyChannelMembers(hub, ch.Members, updateMsg)
+			} else {
+				hub.BroadcastAll(updateMsg)
+			}
 
 			writeJSON(w, http.StatusCreated, map[string]any{
 				"channel": ch,
@@ -538,6 +578,8 @@ func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
 				writeError(w, http.StatusBadRequest, "Channel id query parameter is required")
 				return
 			}
+
+			existingCh, _ := store.GetChannel(id)
 
 			if err := store.DeleteChannel(id, user.Username); err != nil {
 				switch {
@@ -552,13 +594,18 @@ func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
 				return
 			}
 
-			hub.BroadcastAll(Message{
+			delMsg := Message{
 				Type:      "channel_update",
 				Sender:    user.Username,
 				Content:   "Channel deleted",
 				Data:      map[string]string{"id": id},
 				Timestamp: time.Now().UnixMilli(),
-			})
+			}
+			if existingCh != nil && existingCh.IsPrivate {
+				notifyChannelMembers(hub, existingCh.Members, delMsg)
+			} else {
+				hub.BroadcastAll(delMsg)
+			}
 
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status": "ok",
@@ -568,6 +615,144 @@ func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
+	})
+}
+
+func inviteChannelHandler(store Store, hub *Hub) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+
+		var req InviteChannelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid JSON request body")
+			return
+		}
+
+		channelID := strings.ToLower(strings.TrimSpace(req.ChannelID))
+		targetUser := normalizeUsername(req.Username)
+		if channelID == "" || targetUser == "" {
+			writeError(w, http.StatusBadRequest, "channelId and username are required")
+			return
+		}
+
+		updatedCh, err := store.InviteToChannel(channelID, user.Username, targetUser)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrChannelNotFound):
+				writeError(w, http.StatusNotFound, "Channel not found")
+			case errors.Is(err, ErrUserNotFound):
+				writeError(w, http.StatusNotFound, "Target user not found")
+			case errors.Is(err, ErrChannelNotPrivate):
+				writeError(w, http.StatusBadRequest, "Channel is not private")
+			case errors.Is(err, ErrChannelForbidden):
+				msg := strings.TrimPrefix(err.Error(), ErrChannelForbidden.Error()+": ")
+				writeError(w, http.StatusForbidden, msg)
+			default:
+				writeError(w, http.StatusInternalServerError, "Failed to invite user to channel")
+			}
+			return
+		}
+
+		updateMsg := Message{
+			Type:      "channel_update",
+			Sender:    user.Username,
+			Content:   "Member invited",
+			Data:      updatedCh,
+			Timestamp: time.Now().UnixMilli(),
+		}
+		notifyChannelMembers(hub, updatedCh.Members, updateMsg)
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"channel": updatedCh,
+		})
+	})
+}
+
+// --- User Profile & Presence Status Handlers ---
+
+type UpdateProfileRequest struct {
+	AvatarURL *string `json:"avatarUrl"`
+	Status    *string `json:"status"`
+}
+
+func profileHandler(store Store, hub *Hub) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		if r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+
+		var req UpdateProfileRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid JSON request body")
+			return
+		}
+
+		var statusPtr *string
+		if req.Status != nil {
+			s := strings.ToLower(strings.TrimSpace(*req.Status))
+			if !isValidUserStatus(s) {
+				writeError(w, http.StatusBadRequest, "Status must be 'online', 'away', or 'dnd'")
+				return
+			}
+			statusPtr = &s
+		}
+
+		var avatarPtr *string
+		if req.AvatarURL != nil {
+			a := strings.TrimSpace(*req.AvatarURL)
+			if a != "" {
+				if !strings.HasPrefix(a, "/api/uploads/") || !isSafeUploadFilename(strings.TrimPrefix(a, "/api/uploads/")) {
+					writeError(w, http.StatusBadRequest, "avatarUrl must be empty or a valid /api/uploads/ path")
+					return
+				}
+			}
+			avatarPtr = &a
+		}
+
+		profile, err := store.UpdateProfile(user.Username, avatarPtr, statusPtr)
+		if err != nil {
+			if errors.Is(err, ErrUserNotFound) {
+				writeError(w, http.StatusNotFound, "User not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "Failed to update profile")
+			}
+			return
+		}
+
+		hub.BroadcastAll(Message{
+			Type:      "profile_update",
+			Sender:    user.Username,
+			Data:      profile,
+			Timestamp: time.Now().UnixMilli(),
+		})
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"profile": profile,
+			"user":    profile,
+		})
+	})
+}
+
+func profilesHandler(store Store) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+
+		profiles, err := store.GetAllProfiles()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to retrieve profiles")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"profiles": profiles,
+		})
 	})
 }
 
@@ -595,7 +780,7 @@ func messagesHandler(store Store, hub *Hub) http.HandlerFunc {
 				return
 			}
 
-			if !isAuthorizedForRoom(room, user.Username) {
+			if !isAuthorizedForRoom(room, user.Username, store) {
 				writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
 				return
 			}
@@ -632,7 +817,7 @@ func messagesHandler(store Store, hub *Hub) http.HandlerFunc {
 				return
 			}
 
-			if !isAuthorizedForRoom(room, user.Username) {
+			if !isAuthorizedForRoom(room, user.Username, store) {
 				writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
 				return
 			}
@@ -673,7 +858,7 @@ func messagesHandler(store Store, hub *Hub) http.HandlerFunc {
 				return
 			}
 
-			if !isAuthorizedForRoom(room, user.Username) {
+			if !isAuthorizedForRoom(room, user.Username, store) {
 				writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
 				return
 			}
@@ -732,7 +917,7 @@ func reactMessageHandler(store Store, hub *Hub) http.HandlerFunc {
 			return
 		}
 
-		if !isAuthorizedForRoom(room, user.Username) {
+		if !isAuthorizedForRoom(room, user.Username, store) {
 			writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
 			return
 		}
@@ -776,7 +961,7 @@ func searchMessagesHandler(store Store) http.HandlerFunc {
 			return
 		}
 
-		if !isAuthorizedForRoom(room, user.Username) {
+		if !isAuthorizedForRoom(room, user.Username, store) {
 			writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
 			return
 		}
@@ -867,8 +1052,13 @@ func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
 	mux.HandleFunc("/api/friends/reject", friendRejectHandler(store, hub))
 	mux.HandleFunc("/api/friends/remove", friendRemoveHandler(store, hub))
 
+	// Profile endpoints
+	mux.HandleFunc("/api/profile", profileHandler(store, hub))
+	mux.HandleFunc("/api/profiles", profilesHandler(store))
+
 	// Channels & Messages endpoints
 	mux.HandleFunc("/api/channels", channelsHandler(store, hub))
+	mux.HandleFunc("/api/channels/invite", inviteChannelHandler(store, hub))
 	mux.HandleFunc("/api/messages", messagesHandler(store, hub))
 	mux.HandleFunc("/api/messages/react", reactMessageHandler(store, hub))
 	mux.HandleFunc("/api/messages/search", searchMessagesHandler(store))

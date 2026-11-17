@@ -1,12 +1,29 @@
-import React from 'react';
-import { Hash, Volume2, Users, LogOut, PhoneOff, Plus, Trash2, AlertCircle, X } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  Hash,
+  Volume2,
+  Users,
+  LogOut,
+  PhoneOff,
+  Plus,
+  Trash2,
+  AlertCircle,
+  X,
+  Lock,
+} from 'lucide-react';
 import clsx from 'clsx';
-import type { Channel, Friend } from '../types';
+import type { Channel, Friend, UserProfile } from '../types';
 import { getDmRoomId, isDmRoom } from '../utils/dm';
+import { UserAvatar } from './UserAvatar';
+import { ProfilePopover } from './ProfilePopover';
 
 interface ChannelSidebarProps {
   channels: Channel[];
   friends?: Friend[];
+  profiles?: Record<string, UserProfile>;
+  currentProfile: UserProfile;
+  token: string;
+  onProfileUpdated: (profile: UserProfile) => void;
   unreadCounts?: Record<string, number>;
   activeChannel: string;
   onSelectChannel: (channelId: string) => void;
@@ -27,6 +44,10 @@ interface ChannelSidebarProps {
 export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
   channels,
   friends = [],
+  profiles = {},
+  currentProfile,
+  token,
+  onProfileUpdated,
   unreadCounts = {},
   activeChannel,
   onSelectChannel,
@@ -43,6 +64,8 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
   onSelectFriends,
   onLogout,
 }) => {
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+
   const textChannels = channels.filter((c) => c.type !== 'voice');
   const voiceChannels = channels.filter((c) => c.type === 'voice');
 
@@ -51,14 +74,12 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
     return count > 99 ? '99+' : String(count);
   };
 
-  // Total unread across all DM rooms for the Friends nav badge
   const totalUnreadDms = Object.entries(unreadCounts).reduce(
     (sum, [roomId, count]) => (isDmRoom(roomId) ? sum + count : sum),
     0
   );
   const totalUnreadDmLabel = formatUnread(totalUnreadDms);
 
-  // Strictly creator-only deletion: never system defaults, never rooms created by others
   const canDeleteChannel = (ch: Channel): boolean => {
     if (!onDeleteChannel) return false;
     if (ch.id === 'random' || ch.id === 'voice-lounge') return false;
@@ -68,8 +89,18 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
     return creator === username.trim().toLowerCase();
   };
 
+  const currentStatus = currentProfile.status || 'online';
+  const statusDisplayLabel =
+    connectionStatus !== 'connected'
+      ? connectionStatus
+      : currentStatus === 'dnd'
+      ? 'Do Not Disturb'
+      : currentStatus === 'away'
+      ? 'Away'
+      : 'Online';
+
   return (
-    <aside className="w-60 bg-surface border-r border-white/[0.07] flex flex-col h-full select-none flex-shrink-0">
+    <aside className="w-60 bg-surface border-r border-white/[0.07] flex flex-col h-full select-none flex-shrink-0 relative">
       {/* Brand Header */}
       <div className="h-14 px-4 flex items-center justify-between border-b border-white/[0.06] flex-shrink-0">
         <div className="flex items-center space-x-2.5 min-w-0">
@@ -182,12 +213,21 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
                     type="button"
                     className="flex-1 flex items-center px-2.5 py-1.5 min-w-0 text-left"
                   >
-                    <Hash
-                      className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
-                        'text-accent': isActive,
-                        'text-text-muted group-hover:text-text-secondary': !isActive,
-                      })}
-                    />
+                    {channel.isPrivate ? (
+                      <Lock
+                        className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
+                          'text-accent': isActive,
+                          'text-text-muted group-hover:text-text-secondary': !isActive,
+                        })}
+                      />
+                    ) : (
+                      <Hash
+                        className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
+                          'text-accent': isActive,
+                          'text-text-muted group-hover:text-text-secondary': !isActive,
+                        })}
+                      />
+                    )}
                     <span className="truncate flex-1">{channel.name}</span>
                   </button>
 
@@ -253,13 +293,23 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
                     type="button"
                     className="flex-1 flex items-center px-2.5 py-1.5 min-w-0 text-left"
                   >
-                    <Volume2
-                      className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
-                        'text-online': isInCall && isActive,
-                        'text-accent': isActive && !isInCall,
-                        'text-text-muted group-hover:text-text-secondary': !isActive,
-                      })}
-                    />
+                    {channel.isPrivate ? (
+                      <Lock
+                        className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
+                          'text-online': isInCall && isActive,
+                          'text-accent': isActive && !isInCall,
+                          'text-text-muted group-hover:text-text-secondary': !isActive,
+                        })}
+                      />
+                    ) : (
+                      <Volume2
+                        className={clsx('w-3.5 h-3.5 mr-2 flex-shrink-0 transition-colors', {
+                          'text-online': isInCall && isActive,
+                          'text-accent': isActive && !isInCall,
+                          'text-text-muted group-hover:text-text-secondary': !isActive,
+                        })}
+                      />
+                    )}
                     <span className="truncate flex-1">{channel.name}</span>
                   </button>
 
@@ -300,15 +350,19 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
             Direct Messages
           </div>
           {friends.length === 0 ? (
-            <div className="px-2.5 py-1 text-[11px] text-text-muted/70">
-              No friends yet
-            </div>
+            <div className="px-2.5 py-1 text-[11px] text-text-muted/70">No friends yet</div>
           ) : (
             <div className="space-y-0.5">
               {friends.map((friend) => {
                 const dmRoomId = getDmRoomId(username, friend.username);
                 const isActive = !isFriendsActive && activeChannel === dmRoomId;
                 const unreadLabel = formatUnread(unreadCounts[dmRoomId]);
+                const friendProfile = profiles[friend.username.toLowerCase()];
+                const avatarUrl = friendProfile?.avatarUrl || friend.avatarUrl;
+                const presenceStatus = friend.isOnline
+                  ? friendProfile?.status || friend.status || 'online'
+                  : 'offline';
+
                 return (
                   <button
                     key={friend.username}
@@ -323,17 +377,14 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
                         : 'text-text-secondary hover:bg-card/40 hover:text-text-primary border border-transparent'
                     )}
                   >
-                    <div className="relative mr-2.5 flex-shrink-0">
-                      <div className="w-5 h-5 rounded-full bg-surface-elevated border border-white/[0.08] flex items-center justify-center text-[10px] font-semibold text-text-primary uppercase">
-                        {friend.username.charAt(0)}
-                      </div>
-                      <span
-                        className={clsx(
-                          'absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-surface',
-                          friend.isOnline ? 'bg-online' : 'bg-text-muted/60'
-                        )}
-                      />
-                    </div>
+                    <UserAvatar
+                      username={friend.username}
+                      avatarUrl={avatarUrl}
+                      status={presenceStatus}
+                      showStatus={true}
+                      size="xs"
+                      className="mr-2.5"
+                    />
                     <span className="truncate flex-1 text-left">{friend.username}</span>
                     {isInCall && isActive ? (
                       <span className="text-[10px] font-medium text-online bg-online/10 px-1.5 py-0.5 rounded-full">
@@ -377,27 +428,38 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
         </div>
       )}
 
+      {/* Profile Avatar & Status Popover */}
+      <ProfilePopover
+        isOpen={isProfileOpen}
+        token={token}
+        profile={currentProfile}
+        onClose={() => setIsProfileOpen(false)}
+        onProfileUpdated={onProfileUpdated}
+      />
+
       {/* Minimal User Footer */}
-      <div className="h-14 px-3 border-t border-white/[0.06] flex items-center justify-between bg-canvas/30 flex-shrink-0">
-        <div className="flex items-center space-x-2.5 min-w-0">
-          <div className="relative flex-shrink-0">
-            <div className="w-8 h-8 rounded-full bg-accent/15 border border-accent/30 flex items-center justify-center text-xs font-semibold text-accent uppercase">
-              {username.charAt(0)}
-            </div>
-            <span
-              className={clsx(
-                'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-surface',
-                connectionStatus === 'connected' ? 'bg-online' : 'bg-text-muted'
-              )}
-            />
-          </div>
+      <div className="h-14 px-2.5 border-t border-white/[0.06] flex items-center justify-between bg-canvas/30 flex-shrink-0">
+        <button
+          type="button"
+          onClick={() => setIsProfileOpen((prev) => !prev)}
+          className={clsx(
+            'flex items-center space-x-2.5 min-w-0 flex-1 mr-1 px-1.5 py-1 rounded-lg transition-colors text-left',
+            isProfileOpen ? 'bg-card' : 'hover:bg-card/60'
+          )}
+          title="Edit avatar & status"
+        >
+          <UserAvatar
+            username={username}
+            avatarUrl={currentProfile.avatarUrl}
+            status={connectionStatus === 'connected' ? currentStatus : 'offline'}
+            showStatus={true}
+            size="md"
+          />
           <div className="truncate leading-tight">
             <div className="text-xs font-medium text-text-primary truncate">{username}</div>
-            <div className="text-[10px] text-text-muted capitalize">
-              {connectionStatus === 'connected' ? 'Online' : connectionStatus}
-            </div>
+            <div className="text-[10px] text-text-muted truncate">{statusDisplayLabel}</div>
           </div>
-        </div>
+        </button>
 
         <button
           type="button"

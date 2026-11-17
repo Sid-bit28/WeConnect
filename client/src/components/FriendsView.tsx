@@ -12,13 +12,15 @@ import {
   Loader2,
 } from 'lucide-react';
 import clsx from 'clsx';
-import type { Friend, FriendRequest } from '../types';
+import type { Friend, FriendRequest, UserProfile } from '../types';
 import { getApiBaseUrl } from '../utils/api';
 import { getDmRoomId } from '../utils/dm';
+import { UserAvatar } from './UserAvatar';
 
 interface FriendsViewProps {
   token: string | null;
   currentUsername: string;
+  profiles?: Record<string, UserProfile>;
   refreshTrigger?: number;
   onFriendsChanged?: () => void;
   onOpenChat?: (channelId: string) => void;
@@ -29,6 +31,7 @@ type TabType = 'online' | 'all' | 'pending' | 'add';
 export const FriendsView: React.FC<FriendsViewProps> = ({
   token,
   currentUsername,
+  profiles = {},
   refreshTrigger = 0,
   onFriendsChanged,
   onOpenChat,
@@ -192,22 +195,6 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     }
   };
 
-  const getAvatarStyle = (name: string) => {
-    const styles = [
-      'bg-indigo-500/15 text-indigo-300 border-indigo-500/25',
-      'bg-emerald-500/15 text-emerald-300 border-emerald-500/25',
-      'bg-amber-500/15 text-amber-300 border-amber-500/25',
-      'bg-rose-500/15 text-rose-300 border-rose-500/25',
-      'bg-cyan-500/15 text-cyan-300 border-cyan-500/25',
-      'bg-violet-500/15 text-violet-300 border-violet-500/25',
-    ];
-    let hash = 0;
-    for (let i = 0; i < name.length; i++) {
-      hash = name.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return styles[Math.abs(hash) % styles.length];
-  };
-
   const filteredFriends = friends.filter((f) => {
     const matchesSearch = f.username.toLowerCase().includes(searchQuery.toLowerCase());
     if (activeTab === 'online') return matchesSearch && f.isOnline;
@@ -354,14 +341,11 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                       className="flex items-center justify-between p-3 rounded-xl bg-surface/60 hover:bg-surface border border-white/[0.06] transition-colors"
                     >
                       <div className="flex items-center space-x-3">
-                        <div
-                          className={clsx(
-                            'w-8 h-8 rounded-full border flex items-center justify-center font-semibold text-xs',
-                            getAvatarStyle(req.username)
-                          )}
-                        >
-                          {req.username.charAt(0).toUpperCase()}
-                        </div>
+                        <UserAvatar
+                          username={req.username}
+                          avatarUrl={profiles[req.username.toLowerCase()]?.avatarUrl}
+                          size="md"
+                        />
                         <div>
                           <div className="text-xs font-semibold text-text-primary">{req.username}</div>
                           <div className="text-[11px] text-text-muted">Incoming request</div>
@@ -408,14 +392,11 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                       className="flex items-center justify-between p-3 rounded-xl bg-surface/60 hover:bg-surface border border-white/[0.06] transition-colors"
                     >
                       <div className="flex items-center space-x-3">
-                        <div
-                          className={clsx(
-                            'w-8 h-8 rounded-full border flex items-center justify-center font-semibold text-xs',
-                            getAvatarStyle(req.username)
-                          )}
-                        >
-                          {req.username.charAt(0).toUpperCase()}
-                        </div>
+                        <UserAvatar
+                          username={req.username}
+                          avatarUrl={profiles[req.username.toLowerCase()]?.avatarUrl}
+                          size="md"
+                        />
                         <div>
                           <div className="text-xs font-semibold text-text-primary">{req.username}</div>
                           <div className="text-[11px] text-text-muted">Pending acceptance</div>
@@ -473,36 +454,38 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
               </div>
             ) : (
               <div className="space-y-1.5">
-                {filteredFriends.map((friend) => (
+                {filteredFriends.map((friend) => {
+                  const friendProfile = profiles[friend.username.toLowerCase()];
+                  const presenceStatus = friend.isOnline
+                    ? friendProfile?.status || friend.status || 'online'
+                    : 'offline';
+                  const statusLabel = !friend.isOnline
+                    ? 'Offline'
+                    : presenceStatus === 'dnd'
+                    ? 'Do Not Disturb'
+                    : presenceStatus === 'away'
+                    ? 'Away'
+                    : 'Online';
+
+                  return (
                   <div
                     key={friend.username}
                     className="flex items-center justify-between p-3 rounded-xl bg-surface/60 hover:bg-surface border border-white/[0.06] transition-colors group"
                   >
                     <div className="flex items-center space-x-3 truncate">
-                      <div className="relative flex-shrink-0">
-                        <div
-                          className={clsx(
-                            'w-8 h-8 rounded-full border flex items-center justify-center font-semibold text-xs',
-                            getAvatarStyle(friend.username)
-                          )}
-                        >
-                          {friend.username.charAt(0).toUpperCase()}
-                        </div>
-                        <span
-                          className={clsx(
-                            'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-surface',
-                            friend.isOnline ? 'bg-online' : 'bg-text-muted'
-                          )}
-                        />
-                      </div>
+                      <UserAvatar
+                        username={friend.username}
+                        avatarUrl={friendProfile?.avatarUrl || friend.avatarUrl}
+                        status={presenceStatus}
+                        showStatus={true}
+                        size="md"
+                      />
 
                       <div className="truncate leading-tight">
                         <div className="text-xs font-semibold text-text-primary truncate">
                           {friend.username}
                         </div>
-                        <div className="text-[11px] text-text-muted">
-                          {friend.isOnline ? 'Online' : 'Offline'}
-                        </div>
+                        <div className="text-[11px] text-text-muted">{statusLabel}</div>
                       </div>
                     </div>
 
@@ -528,7 +511,8 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                       </button>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
