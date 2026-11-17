@@ -6,20 +6,19 @@ import { UserList } from './components/UserList';
 import { FriendsView } from './components/FriendsView';
 import { AuthScreen } from './components/AuthScreen';
 import { CreateChannelModal } from './components/CreateChannelModal';
+import { NotificationToast, type NotificationItem } from './components/NotificationToast';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
 import type { Channel, Message, AuthUser, Friend } from './types';
 import { getApiBaseUrl } from './utils/api';
 import { isDmRoom, getDmPeerUsername } from './utils/dm';
+import { playNotificationChime } from './utils/sound';
 import { Video, Loader2 } from 'lucide-react';
 
 const DEFAULT_CHANNELS: Channel[] = [
-  { id: 'general', name: 'general', type: 'text', topic: 'General workspace discussion' },
-  { id: 'random', name: 'random', type: 'text', topic: 'Casual talk and off-topic' },
-  { id: 'dev-chat', name: 'dev-chat', type: 'text', topic: 'Engineering, architecture, and releases' },
-  { id: 'voice-lounge', name: 'Voice Lounge', type: 'voice', topic: 'Drop-in voice and video room' },
-  { id: 'gaming', name: 'Gaming Room', type: 'voice', topic: 'Low-latency voice room' },
+  { id: 'random', name: 'Random', type: 'text', topic: 'Open group chat', createdBy: 'system' },
+  { id: 'voice-lounge', name: 'Voice Lounge', type: 'voice', topic: 'Drop-in voice and video group', createdBy: 'system' },
 ];
 
 interface AuthenticatedAppProps {
@@ -32,7 +31,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const activeUsername = user.username;
 
   const [channels, setChannels] = useState<Channel[]>(DEFAULT_CHANNELS);
-  const [activeChannelId, setActiveChannelId] = useState<string>('general');
+  const [activeChannelId, setActiveChannelId] = useState<string>('random');
   const [isFriendsViewActive, setIsFriendsViewActive] = useState<boolean>(false);
   const [showUserList, setShowUserList] = useState<boolean>(true);
   const [isCallViewActive, setIsCallViewActive] = useState<boolean>(false);
@@ -41,10 +40,16 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [isCreateChannelOpen, setIsCreateChannelOpen] = useState<boolean>(false);
   const [createChannelType, setCreateChannelType] = useState<'text' | 'voice'>('text');
+  const [channelError, setChannelError] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   const handleSignalRef = useRef<((msg: Message) => Promise<void>) | null>(null);
+  const leaveCallRef = useRef<(() => void) | null>(null);
+  const isInCallRef = useRef<boolean>(false);
   const activeChannelIdRef = useRef<string>(activeChannelId);
   const isFriendsViewActiveRef = useRef<boolean>(isFriendsViewActive);
+  const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const notificationRequestedRef = useRef<boolean>(false);
 
   useEffect(() => {
     activeChannelIdRef.current = activeChannelId;
@@ -53,6 +58,101 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   useEffect(() => {
     isFriendsViewActiveRef.current = isFriendsViewActive;
   }, [isFriendsViewActive]);
+
+  // Clean up toast auto-dismiss timers on unmount
+  useEffect(() => {
+    const timers = toastTimersRef.current;
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
+    };
+  }, []);
+
+  const requestNotificationPermissionOnce = useCallback(() => {
+    if (notificationRequestedRef.current) return;
+    notificationRequestedRef.current = true;
+    try {
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+        void Notification.requestPermission();
+      }
+    } catch {
+      // Ignore permission request errors
+    }
+  }, []);
+
+  const dismissNotification = useCallback((id: string) => {
+    const timer = toastTimersRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      toastTimersRef.current.delete(id);
+    }
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  const clearUnread = useCallback((roomId: string) => {
+    setUnreadCounts((prev) => {
+      if (!prev[roomId]) return prev;
+      const next = { ...prev };
+      delete next[roomId];
+      return next;
+    });
+  }, []);
+
+  const openRoomDirect = useCallback(
+    (roomId: string) => {
+      setActiveChannelId(roomId);
+      setIsFriendsViewActive(false);
+      clearUnread(roomId);
+    },
+    [clearUnread]
+  );
+
+  const pushDmNotification = useCallback(
+    (room: string, sender: string, preview: string) => {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const item: NotificationItem = {
+        id,
+        room,
+        sender,
+        preview: preview || 'Sent you a message',
+        timestamp: Date.now(),
+      };
+
+      setNotifications((prev) => [...prev.slice(-3), item]);
+      playNotificationChime();
+
+      const timer = setTimeout(() => {
+        toastTimersRef.current.delete(id);
+        setNotifications((prev) => prev.filter((n) => n.id !== id));
+      }, 5000);
+      toastTimersRef.current.set(id, timer);
+
+      // Fire native desktop notification if tab is hidden and permission granted
+      try {
+        if (
+          typeof document !== 'undefined' &&
+          document.hidden &&
+          typeof window !== 'undefined' &&
+          'Notification' in window &&
+          Notification.permission === 'granted'
+        ) {
+          const desktopNotif = new Notification(`${sender} sent a message`, {
+            body: item.preview,
+            tag: room,
+          });
+          desktopNotif.onclick = () => {
+            window.focus();
+            openRoomDirect(room);
+            dismissNotification(id);
+            desktopNotif.close();
+          };
+        }
+      } catch {
+        // Ignore browser Notification API errors
+      }
+    },
+    [dismissNotification, openRoomDirect]
+  );
 
   const fetchChannels = useCallback(async () => {
     try {
@@ -70,11 +170,14 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
           : [];
         if (list.length > 0) {
           setChannels(list);
-          // If the active channel was deleted, fall back cleanly to general
+          // If the active room was deleted by its creator, leave any call and return to Random
           if (!isDmRoom(activeChannelIdRef.current)) {
             const stillExists = list.some((c) => c.id === activeChannelIdRef.current);
             if (!stillExists) {
-              setActiveChannelId('general');
+              if (isInCallRef.current && leaveCallRef.current) {
+                leaveCallRef.current();
+              }
+              setActiveChannelId('random');
             }
           }
         }
@@ -106,15 +209,6 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     fetchFriendsList();
   }, [fetchChannels, fetchFriendsList]);
 
-  const clearUnread = useCallback((roomId: string) => {
-    setUnreadCounts((prev) => {
-      if (!prev[roomId]) return prev;
-      const next = { ...prev };
-      delete next[roomId];
-      return next;
-    });
-  }, []);
-
   const {
     status,
     messages,
@@ -142,6 +236,9 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             ...prev,
             [msg.room]: (prev[msg.room] || 0) + 1,
           }));
+          if (isDmRoom(msg.room) && msg.sender) {
+            pushDmNotification(msg.room, msg.sender, msg.content || 'Sent you a message');
+          }
         }
       }
 
@@ -161,7 +258,9 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
 
   useEffect(() => {
     handleSignalRef.current = webrtc.handleSignal;
-  }, [webrtc.handleSignal]);
+    leaveCallRef.current = webrtc.leaveCall;
+    isInCallRef.current = webrtc.isInCall;
+  }, [webrtc.handleSignal, webrtc.leaveCall, webrtc.isInCall]);
 
   // Resolve active channel vs Direct Message room metadata
   const activeIsDm = isDmRoom(activeChannelId);
@@ -187,14 +286,18 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   }, [webrtc.isInCall]);
 
   const handleSendMessage = (content: string) => {
+    requestNotificationPermissionOnce();
     send('chat', content);
   };
 
   const handleChannelSelect = (channelId: string) => {
+    requestNotificationPermissionOnce();
     const targetChannel = channels.find((c) => c.id === channelId);
     setActiveChannelId(channelId);
     setIsFriendsViewActive(false);
     clearUnread(channelId);
+    // Clear any existing toasts for this room
+    setNotifications((prev) => prev.filter((n) => n.room !== channelId));
 
     if (targetChannel?.type === 'voice' && !webrtc.isInCall) {
       webrtc.joinCall();
@@ -217,7 +320,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        return data.error || data.message || 'Failed to create channel.';
+        return data.error || data.message || 'Failed to create group.';
       }
       await fetchChannels();
       const createdId = data.channel?.id || data.id;
@@ -228,15 +331,16 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       }
       return null;
     } catch (err: any) {
-      return err?.message || 'Network error while creating channel.';
+      return err?.message || 'Network error while creating group.';
     }
   };
 
   const handleDeleteChannel = async (channelId: string) => {
-    if (channelId === 'general') return;
+    if (channelId === 'random' || channelId === 'voice-lounge') return;
+    setChannelError(null);
     const ch = channels.find((c) => c.id === channelId);
     const label = ch ? ch.name : channelId;
-    if (!confirm(`Delete channel "${label}"?`)) return;
+    if (!confirm(`Delete "${label}"?`)) return;
 
     try {
       const res = await fetch(
@@ -250,17 +354,24 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
       );
       if (res.ok) {
         if (activeChannelId === channelId) {
-          setActiveChannelId('general');
-          clearUnread('general');
+          if (webrtc.isInCall) {
+            webrtc.leaveCall();
+          }
+          setActiveChannelId('random');
+          clearUnread('random');
         }
         await fetchChannels();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setChannelError(data.error || data.message || 'Failed to delete room.');
       }
-    } catch (err) {
-      console.warn('Failed to delete channel:', err);
+    } catch (err: any) {
+      setChannelError(err?.message || 'Network error while deleting room.');
     }
   };
 
   const handleSelectFriends = () => {
+    requestNotificationPermissionOnce();
     setIsFriendsViewActive(true);
   };
 
@@ -283,10 +394,13 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
         activeChannel={activeChannelId}
         onSelectChannel={handleChannelSelect}
         onOpenCreateChannel={(type) => {
+          setChannelError(null);
           setCreateChannelType(type);
           setIsCreateChannelOpen(true);
         }}
         onDeleteChannel={handleDeleteChannel}
+        channelError={channelError}
+        onDismissChannelError={() => setChannelError(null)}
         username={activeUsername}
         connectionStatus={status}
         isInCall={webrtc.isInCall}
@@ -327,9 +441,8 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             refreshTrigger={friendsRefreshTrigger}
             onFriendsChanged={fetchFriendsList}
             onOpenChat={(roomId) => {
-              setActiveChannelId(roomId);
-              setIsFriendsViewActive(false);
-              clearUnread(roomId);
+              openRoomDirect(roomId);
+              setNotifications((prev) => prev.filter((n) => n.room !== roomId));
             }}
           />
         ) : isCallViewActive ? (
@@ -380,12 +493,22 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
         <UserList users={onlineUsers} currentUsername={activeUsername} />
       )}
 
-      {/* Create Channel Modal */}
+      {/* Create Group Modal */}
       <CreateChannelModal
         isOpen={isCreateChannelOpen}
         defaultType={createChannelType}
         onClose={() => setIsCreateChannelOpen(false)}
         onCreate={handleCreateChannel}
+      />
+
+      {/* Friend DM Notification Toasts */}
+      <NotificationToast
+        notifications={notifications}
+        onOpenRoom={(roomId, notifId) => {
+          openRoomDirect(roomId);
+          dismissNotification(notifId);
+        }}
+        onDismiss={dismissNotification}
       />
     </div>
   );

@@ -108,21 +108,30 @@ func (p *PostgresStore) autoMigrate(ctx context.Context) error {
 		return err
 	}
 
-	var count int
-	if err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM channels`).Scan(&count); err != nil {
+	// Clean up legacy system-seeded channels while leaving user-created channels intact
+	if _, err := p.pool.Exec(ctx,
+		`DELETE FROM channels WHERE LOWER(created_by) = 'system' AND id IN ('general', 'dev-chat', 'gaming')`,
+	); err != nil {
 		return err
 	}
-	if count == 0 {
-		for _, ch := range defaultChannels() {
-			_, err := p.pool.Exec(ctx,
-				`INSERT INTO channels (id, name, type, topic, created_by, created_at)
-				 VALUES ($1, $2, $3, $4, $5, $6)
-				 ON CONFLICT (id) DO NOTHING`,
-				ch.ID, ch.Name, ch.Type, ch.Topic, ch.CreatedBy, ch.CreatedAt,
-			)
-			if err != nil {
-				return err
-			}
+
+	// Ensure default channels (random, voice-lounge) exist and have up-to-date metadata
+	for _, ch := range defaultChannels() {
+		_, err := p.pool.Exec(ctx,
+			`INSERT INTO channels (id, name, type, topic, created_by, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6)
+			 ON CONFLICT (id) DO NOTHING`,
+			ch.ID, ch.Name, ch.Type, ch.Topic, ch.CreatedBy, ch.CreatedAt,
+		)
+		if err != nil {
+			return err
+		}
+		_, err = p.pool.Exec(ctx,
+			`UPDATE channels SET name = $2, topic = $3 WHERE id = $1 AND LOWER(created_by) = 'system'`,
+			ch.ID, ch.Name, ch.Topic,
+		)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -514,13 +523,25 @@ func (p *PostgresStore) CreateChannel(ch Channel) error {
 	return nil
 }
 
-func (p *PostgresStore) DeleteChannel(id string) error {
-	if id == "general" {
-		return errors.New("Cannot delete the default #general channel")
-	}
-
+func (p *PostgresStore) DeleteChannel(id, requestingUser string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	var createdBy string
+	err := p.pool.QueryRow(ctx, `SELECT created_by FROM channels WHERE id = $1`, id).Scan(&createdBy)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrChannelNotFound
+		}
+		return err
+	}
+
+	if isDefaultProtectedChannel(id, createdBy) {
+		return fmt.Errorf("%w: Default rooms cannot be deleted", ErrChannelForbidden)
+	}
+	if !strings.EqualFold(createdBy, requestingUser) {
+		return fmt.Errorf("%w: Only the creator of this room can delete it", ErrChannelForbidden)
+	}
 
 	tag, err := p.pool.Exec(ctx, `DELETE FROM channels WHERE id = $1`, id)
 	if err != nil {

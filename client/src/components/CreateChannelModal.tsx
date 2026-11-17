@@ -69,9 +69,11 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h3 className="text-sm font-semibold text-text-primary">Create Channel</h3>
+            <h3 className="text-sm font-semibold text-text-primary">
+              {type === 'voice' ? 'Create Voice Group' : 'Create Group Chat'}
+            </h3>
             <p className="text-[11px] text-text-muted mt-0.5">
-              Channels organize conversations for everyone.
+              Only you as the creator can delete this group later.
             </p>
           </div>
           <button
@@ -97,7 +99,7 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
           {/* Type Selector */}
           <div>
             <label className="block text-[10px] font-semibold uppercase tracking-widest text-text-muted mb-1.5">
-              Channel Type
+              Group Type
             </label>
             <div className="grid grid-cols-2 gap-2">
               <button
@@ -112,7 +114,7 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
                 )}
               >
                 <Hash className={clsx('w-3.5 h-3.5', type === 'text' ? 'text-accent' : 'text-text-muted')} />
-                <span>Text</span>
+                <span>Group Chat</span>
               </button>
               <button
                 type="button"
@@ -126,15 +128,15 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
                 )}
               >
                 <Volume2 className={clsx('w-3.5 h-3.5', type === 'voice' ? 'text-accent' : 'text-text-muted')} />
-                <span>Voice &amp; Video</span>
+                <span>Voice Group</span>
               </button>
             </div>
           </div>
 
-          {/* Channel Name */}
+          {/* Group Name */}
           <div>
             <label className="block text-[10px] font-semibold uppercase tracking-widest text-text-muted mb-1.5">
-              Channel Name
+              Group Name
             </label>
             <input
               type="text"

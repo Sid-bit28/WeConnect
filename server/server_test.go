@@ -732,13 +732,17 @@ func TestCustomChannels(t *testing.T) {
 		t.Fatalf("expected 401 for unauthenticated /api/channels, got %d", w.Code)
 	}
 
-	// Register alice
+	// Register alice & bob
 	_, aliceToken, err := store.Register("alice", "password123")
 	if err != nil {
 		t.Fatalf("register alice failed: %v", err)
 	}
+	_, bobToken, err := store.Register("bob", "password123")
+	if err != nil {
+		t.Fatalf("register bob failed: %v", err)
+	}
 
-	// 2. GET /api/channels -> auto-seeded 5 defaults
+	// 2. GET /api/channels -> auto-seeded ONLY random and voice-lounge
 	w = doJSONRequest(handler, "GET", "/api/channels", nil, aliceToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for GET /api/channels, got %d", w.Code)
@@ -749,12 +753,18 @@ func TestCustomChannels(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &listRes); err != nil {
 		t.Fatalf("decode channels failed: %v", err)
 	}
-	if len(listRes.Channels) != 5 {
-		t.Fatalf("expected 5 default seeded channels, got %d", len(listRes.Channels))
+	if len(listRes.Channels) != 2 {
+		t.Fatalf("expected 2 default seeded channels (random, voice-lounge), got %d: %+v", len(listRes.Channels), listRes.Channels)
+	}
+	if listRes.Channels[0].ID != "random" || listRes.Channels[0].Name != "Random" || listRes.Channels[0].Type != "text" {
+		t.Fatalf("unexpected first default channel: %+v", listRes.Channels[0])
+	}
+	if listRes.Channels[1].ID != "voice-lounge" || listRes.Channels[1].Name != "Voice Lounge" || listRes.Channels[1].Type != "voice" {
+		t.Fatalf("unexpected second default channel: %+v", listRes.Channels[1])
 	}
 
 	// Connect alice to WS to verify live channel_update broadcasts
-	aliceWS := connectWS(t, server.URL, "general", aliceToken)
+	aliceWS := connectWS(t, server.URL, "random", aliceToken)
 	defer aliceWS.Close()
 	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
 	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
@@ -775,14 +785,14 @@ func TestCustomChannels(t *testing.T) {
 		t.Fatalf("expected 400 for invalid channel type, got %d", w.Code)
 	}
 
-	// 4. Create valid custom channel -> 201 + channel_update broadcast
+	// 4. Alice creates a text room & a voice room -> 201 + channel_update broadcast
 	w = doJSONRequest(handler, "POST", "/api/channels", map[string]string{
 		"name":  "Design Sync",
 		"type":  "text",
 		"topic": "Weekly design reviews",
 	}, aliceToken)
 	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201 for create channel, got %d (%s)", w.Code, w.Body.String())
+		t.Fatalf("expected 201 for create text channel, got %d (%s)", w.Code, w.Body.String())
 	}
 	var createRes struct {
 		Channel Channel `json:"channel"`
@@ -791,10 +801,22 @@ func TestCustomChannels(t *testing.T) {
 	if createRes.Channel.ID != "design-sync" || createRes.Channel.CreatedBy != "alice" {
 		t.Fatalf("unexpected created channel: %+v", createRes.Channel)
 	}
-
 	updateMsg := readNextMessage(t, aliceWS, 2*time.Second)
 	if updateMsg.Type != "channel_update" {
 		t.Fatalf("expected channel_update WS broadcast on create, got %+v", updateMsg)
+	}
+
+	w = doJSONRequest(handler, "POST", "/api/channels", map[string]string{
+		"name":  "Standup Room",
+		"type":  "voice",
+		"topic": "Daily standup voice group",
+	}, aliceToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for create voice channel, got %d (%s)", w.Code, w.Body.String())
+	}
+	updateMsg = readNextMessage(t, aliceWS, 2*time.Second)
+	if updateMsg.Type != "channel_update" {
+		t.Fatalf("expected channel_update WS broadcast on voice create, got %+v", updateMsg)
 	}
 
 	// 5. Duplicate channel -> 409 Conflict
@@ -806,33 +828,86 @@ func TestCustomChannels(t *testing.T) {
 		t.Fatalf("expected 409 for duplicate channel, got %d", w.Code)
 	}
 
-	// 6. Delete protected #general -> 400 Bad Request
-	w = doJSONRequest(handler, "DELETE", "/api/channels?id=general", nil, aliceToken)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for deleting general, got %d", w.Code)
+	// 6. Creator-only deletion: Bob cannot delete Alice's text or voice rooms -> 403 Forbidden
+	w = doJSONRequest(handler, "DELETE", "/api/channels?id=design-sync", nil, bobToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when Bob tries to delete Alice's text room, got %d (%s)", w.Code, w.Body.String())
+	}
+	w = doJSONRequest(handler, "DELETE", "/api/channels?id=standup-room", nil, bobToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when Bob tries to delete Alice's voice room, got %d (%s)", w.Code, w.Body.String())
 	}
 
-	// 7. Delete non-existent channel -> 404 Not Found
+	// 7. Default system rooms cannot be deleted -> 403 Forbidden
+	w = doJSONRequest(handler, "DELETE", "/api/channels?id=random", nil, aliceToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for deleting default random channel, got %d (%s)", w.Code, w.Body.String())
+	}
+	w = doJSONRequest(handler, "DELETE", "/api/channels?id=voice-lounge", nil, aliceToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for deleting default voice-lounge channel, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// 8. Delete non-existent channel -> 404 Not Found
 	w = doJSONRequest(handler, "DELETE", "/api/channels?id=does-not-exist", nil, aliceToken)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for deleting unknown channel, got %d", w.Code)
 	}
 
-	// 8. Delete custom channel -> 200 OK + channel_update broadcast
-	w = doJSONRequest(handler, "DELETE", "/api/channels?id=design-sync", nil, aliceToken)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for deleting custom channel, got %d (%s)", w.Code, w.Body.String())
-	}
-	delUpdateMsg := readNextMessage(t, aliceWS, 2*time.Second)
-	if delUpdateMsg.Type != "channel_update" {
-		t.Fatalf("expected channel_update WS broadcast on delete, got %+v", delUpdateMsg)
+	// 9. Alice deletes her own text and voice rooms -> 200 OK + channel_update broadcast
+	for _, id := range []string{"design-sync", "standup-room"} {
+		w = doJSONRequest(handler, "DELETE", "/api/channels?id="+id, nil, aliceToken)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for creator deleting %s, got %d (%s)", id, w.Code, w.Body.String())
+		}
+		delUpdateMsg := readNextMessage(t, aliceWS, 2*time.Second)
+		if delUpdateMsg.Type != "channel_update" {
+			t.Fatalf("expected channel_update WS broadcast on delete %s, got %+v", id, delUpdateMsg)
+		}
 	}
 
-	// Verify channel count returned to 5
+	// Verify channel count returned to 2 defaults
 	w = doJSONRequest(handler, "GET", "/api/channels", nil, aliceToken)
 	_ = json.Unmarshal(w.Body.Bytes(), &listRes)
-	if len(listRes.Channels) != 5 {
-		t.Fatalf("expected 5 channels after delete, got %d", len(listRes.Channels))
+	if len(listRes.Channels) != 2 {
+		t.Fatalf("expected 2 channels after delete, got %d", len(listRes.Channels))
+	}
+}
+
+func TestLegacySystemChannelCleanup(t *testing.T) {
+	tmpFile := t.TempDir() + "/store.json"
+	legacyJSON := `{
+		"users": {},
+		"friendships": {},
+		"tokens": {},
+		"channels": [
+			{"id": "general", "name": "general", "type": "text", "createdBy": "system"},
+			{"id": "random", "name": "random", "type": "text", "createdBy": "system"},
+			{"id": "dev-chat", "name": "dev-chat", "type": "text", "createdBy": "system"},
+			{"id": "voice-lounge", "name": "Voice Lounge", "type": "voice", "createdBy": "system"},
+			{"id": "gaming", "name": "Gaming Room", "type": "voice", "createdBy": "system"},
+			{"id": "my-room", "name": "My Room", "type": "text", "createdBy": "alice"}
+		]
+	}`
+	if err := os.WriteFile(tmpFile, []byte(legacyJSON), 0644); err != nil {
+		t.Fatalf("write legacy store failed: %v", err)
+	}
+
+	store, err := NewFileStore(tmpFile)
+	if err != nil {
+		t.Fatalf("NewFileStore failed: %v", err)
+	}
+	channels, err := store.GetChannels()
+	if err != nil {
+		t.Fatalf("GetChannels failed: %v", err)
+	}
+	if len(channels) != 3 {
+		t.Fatalf("expected 3 channels (random, voice-lounge, my-room), got %d: %+v", len(channels), channels)
+	}
+	for _, ch := range channels {
+		if ch.ID == "general" || ch.ID == "dev-chat" || ch.ID == "gaming" {
+			t.Fatalf("legacy system channel %s should have been removed", ch.ID)
+		}
 	}
 }
 
@@ -849,17 +924,17 @@ func TestTypingAndUnreadNotifications(t *testing.T) {
 	_, bobToken, _ := store.Register("bob", "password123")
 	_, charlieToken, _ := store.Register("charlie", "password123")
 
-	// 1. Alice and Bob both connect to "general"
-	aliceWS := connectWS(t, server.URL, "general", aliceToken)
+	// 1. Alice and Bob both connect to "random"
+	aliceWS := connectWS(t, server.URL, "random", aliceToken)
 	defer aliceWS.Close()
 	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
 	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
 
-	bobGeneralWS := connectWS(t, server.URL, "general", bobToken)
-	_ = readNextMessage(t, bobGeneralWS, 2*time.Second) // join
-	_ = readNextMessage(t, bobGeneralWS, 2*time.Second) // users
-	_ = readNextMessage(t, aliceWS, 2*time.Second)      // bob join
-	_ = readNextMessage(t, aliceWS, 2*time.Second)      // users
+	bobRandomInitialWS := connectWS(t, server.URL, "random", bobToken)
+	_ = readNextMessage(t, bobRandomInitialWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobRandomInitialWS, 2*time.Second) // users
+	_ = readNextMessage(t, aliceWS, 2*time.Second)            // bob join
+	_ = readNextMessage(t, aliceWS, 2*time.Second)            // users
 
 	// Alice sends typing event
 	if err := aliceWS.WriteJSON(Message{
@@ -871,13 +946,13 @@ func TestTypingAndUnreadNotifications(t *testing.T) {
 
 	// Bob receives typing event
 	_ = readNextMessage(t, aliceWS, 2*time.Second) // echo
-	bobTyping := readNextMessage(t, bobGeneralWS, 2*time.Second)
+	bobTyping := readNextMessage(t, bobRandomInitialWS, 2*time.Second)
 	if bobTyping.Type != "typing" || bobTyping.Sender != "alice" {
 		t.Fatalf("bob expected typing from alice, got %+v", bobTyping)
 	}
 
 	// Verify typing event was NOT persisted to message history
-	w := doJSONRequest(handler, "GET", "/api/messages?room=general", nil, aliceToken)
+	w := doJSONRequest(handler, "GET", "/api/messages?room=random", nil, aliceToken)
 	var hist struct {
 		Messages []Message `json:"messages"`
 	}
@@ -886,40 +961,40 @@ func TestTypingAndUnreadNotifications(t *testing.T) {
 		t.Fatalf("typing indicator must not be persisted, got %d messages", len(hist.Messages))
 	}
 
-	// 2. Bob switches to "random" room; Charlie also in "random"
-	bobGeneralWS.Close()
+	// 2. Bob switches to "voice-lounge" room; Charlie also in "voice-lounge"
+	bobRandomInitialWS.Close()
 	_ = readNextMessage(t, aliceWS, 2*time.Second) // bob leave
 	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
 
-	bobRandomWS := connectWS(t, server.URL, "random", bobToken)
-	defer bobRandomWS.Close()
-	_ = readNextMessage(t, bobRandomWS, 2*time.Second) // join
-	_ = readNextMessage(t, bobRandomWS, 2*time.Second) // users
+	bobOtherWS := connectWS(t, server.URL, "voice-lounge", bobToken)
+	defer bobOtherWS.Close()
+	_ = readNextMessage(t, bobOtherWS, 2*time.Second) // join
+	_ = readNextMessage(t, bobOtherWS, 2*time.Second) // users
 
-	charlieRandomWS := connectWS(t, server.URL, "random", charlieToken)
-	defer charlieRandomWS.Close()
-	_ = readNextMessage(t, charlieRandomWS, 2*time.Second) // join
-	_ = readNextMessage(t, charlieRandomWS, 2*time.Second) // users
-	_ = readNextMessage(t, bobRandomWS, 2*time.Second)     // charlie join
-	_ = readNextMessage(t, bobRandomWS, 2*time.Second)     // users
+	charlieOtherWS := connectWS(t, server.URL, "voice-lounge", charlieToken)
+	defer charlieOtherWS.Close()
+	_ = readNextMessage(t, charlieOtherWS, 2*time.Second) // join
+	_ = readNextMessage(t, charlieOtherWS, 2*time.Second) // users
+	_ = readNextMessage(t, bobOtherWS, 2*time.Second)     // charlie join
+	_ = readNextMessage(t, bobOtherWS, 2*time.Second)     // users
 
-	// Alice sends public chat in "general" -> Bob and Charlie (in "random") get unread notification
+	// Alice sends public chat in "random" -> Bob and Charlie (in "voice-lounge") get unread notification
 	if err := aliceWS.WriteJSON(Message{Type: "chat", Content: "Public ping"}); err != nil {
 		t.Fatalf("write chat failed: %v", err)
 	}
 	_ = readNextMessage(t, aliceWS, 2*time.Second)
 
-	bobUnread := readNextMessage(t, bobRandomWS, 2*time.Second)
-	if bobUnread.Type != "unread" || bobUnread.Room != "general" || bobUnread.Sender != "alice" {
-		t.Fatalf("bob expected unread for general, got %+v", bobUnread)
+	bobUnread := readNextMessage(t, bobOtherWS, 2*time.Second)
+	if bobUnread.Type != "unread" || bobUnread.Room != "random" || bobUnread.Sender != "alice" {
+		t.Fatalf("bob expected unread for random, got %+v", bobUnread)
 	}
-	charlieUnread := readNextMessage(t, charlieRandomWS, 2*time.Second)
-	if charlieUnread.Type != "unread" || charlieUnread.Room != "general" || charlieUnread.Sender != "alice" {
-		t.Fatalf("charlie expected unread for general, got %+v", charlieUnread)
+	charlieUnread := readNextMessage(t, charlieOtherWS, 2*time.Second)
+	if charlieUnread.Type != "unread" || charlieUnread.Room != "random" || charlieUnread.Sender != "alice" {
+		t.Fatalf("charlie expected unread for random, got %+v", charlieUnread)
 	}
 
-	// 3. Alice sends DM in "dm:alice:bob" while Bob & Charlie are in "random"
-	// Only Bob should receive unread for dm:alice:bob; Charlie must NOT receive it
+	// 3. Alice sends DM in "dm:alice:bob" while Bob & Charlie are in "voice-lounge"
+	// Only Bob should receive unread for dm:alice:bob WITH Content preview; Charlie must NOT receive it
 	aliceDMWS := connectWS(t, server.URL, "dm:alice:bob", aliceToken)
 	defer aliceDMWS.Close()
 	_ = readNextMessage(t, aliceDMWS, 2*time.Second) // join
@@ -930,14 +1005,25 @@ func TestTypingAndUnreadNotifications(t *testing.T) {
 	}
 	_ = readNextMessage(t, aliceDMWS, 2*time.Second)
 
-	bobDMUnread := readNextMessage(t, bobRandomWS, 2*time.Second)
-	if bobDMUnread.Type != "unread" || bobDMUnread.Room != "dm:alice:bob" || bobDMUnread.Sender != "alice" {
-		t.Fatalf("bob expected unread for dm:alice:bob, got %+v", bobDMUnread)
+	bobDMUnread := readNextMessage(t, bobOtherWS, 2*time.Second)
+	if bobDMUnread.Type != "unread" || bobDMUnread.Room != "dm:alice:bob" || bobDMUnread.Sender != "alice" || bobDMUnread.Content != "Private DM ping" {
+		t.Fatalf("bob expected unread for dm:alice:bob with content preview, got %+v", bobDMUnread)
+	}
+
+	// Also verify long DM message preview is truncated safely to <= 100 runes
+	longMsg := strings.Repeat("a", 150)
+	if err := aliceDMWS.WriteJSON(Message{Type: "chat", Content: longMsg}); err != nil {
+		t.Fatalf("write long dm failed: %v", err)
+	}
+	_ = readNextMessage(t, aliceDMWS, 2*time.Second)
+	bobLongUnread := readNextMessage(t, bobOtherWS, 2*time.Second)
+	if len([]rune(bobLongUnread.Content)) > 100 || !strings.HasSuffix(bobLongUnread.Content, "…") {
+		t.Fatalf("expected truncated preview <= 100 runes ending with ellipsis, got len=%d content=%q", len([]rune(bobLongUnread.Content)), bobLongUnread.Content)
 	}
 
 	// Verify Charlie does NOT receive DM unread
-	_ = charlieRandomWS.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
-	if _, raw, err := charlieRandomWS.ReadMessage(); err == nil {
+	_ = charlieOtherWS.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if _, raw, err := charlieOtherWS.ReadMessage(); err == nil {
 		t.Fatalf("charlie should NOT receive unread for dm:alice:bob, got %s", string(raw))
 	}
 }

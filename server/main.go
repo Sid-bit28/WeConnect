@@ -538,16 +538,16 @@ func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
 				writeError(w, http.StatusBadRequest, "Channel id query parameter is required")
 				return
 			}
-			if id == "general" {
-				writeError(w, http.StatusBadRequest, "Cannot delete the default #general channel")
-				return
-			}
 
-			if err := store.DeleteChannel(id); err != nil {
-				if errors.Is(err, ErrChannelNotFound) {
+			if err := store.DeleteChannel(id, user.Username); err != nil {
+				switch {
+				case errors.Is(err, ErrChannelNotFound):
 					writeError(w, http.StatusNotFound, "Channel not found")
-				} else {
-					writeError(w, http.StatusBadRequest, err.Error())
+				case errors.Is(err, ErrChannelForbidden):
+					msg := strings.TrimPrefix(err.Error(), ErrChannelForbidden.Error()+": ")
+					writeError(w, http.StatusForbidden, msg)
+				default:
+					writeError(w, http.StatusInternalServerError, "Failed to delete channel")
 				}
 				return
 			}

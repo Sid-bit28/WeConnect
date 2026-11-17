@@ -166,6 +166,7 @@ func (c *Client) readPump() {
 			}
 			if strings.HasPrefix(c.room, "dm:") {
 				if otherPeer := getDmOtherPeer(c.room, c.username); otherPeer != "" {
+					unreadMsg.Content = truncatePreview(msg.Content, 100)
 					c.hub.NotifyUserIfNotInRoom(otherPeer, c.room, unreadMsg)
 				}
 			} else {
@@ -236,4 +237,17 @@ func (c *Client) writePump() {
 			}
 		}
 	}
+}
+
+// truncatePreview safely trims and caps a message preview to maxRunes runes.
+func truncatePreview(s string, maxRunes int) string {
+	trimmed := strings.TrimSpace(s)
+	runes := []rune(trimmed)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return trimmed
+	}
+	if maxRunes <= 1 {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:maxRunes-1]) + "…"
 }

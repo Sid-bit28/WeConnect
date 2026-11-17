@@ -33,8 +33,9 @@ type Friendship struct {
 }
 
 var (
-	ErrChannelExists   = errors.New("Channel already exists")
-	ErrChannelNotFound = errors.New("Channel not found")
+	ErrChannelExists    = errors.New("Channel already exists")
+	ErrChannelNotFound  = errors.New("Channel not found")
+	ErrChannelForbidden = errors.New("Forbidden")
 )
 
 // Channel represents a text or voice channel in the workspace.
@@ -50,12 +51,17 @@ type Channel struct {
 func defaultChannels() []Channel {
 	now := time.Now().UTC()
 	return []Channel{
-		{ID: "general", Name: "general", Type: "text", Topic: "General workspace discussion", CreatedBy: "system", CreatedAt: now},
-		{ID: "random", Name: "random", Type: "text", Topic: "Casual talk and off-topic", CreatedBy: "system", CreatedAt: now.Add(time.Millisecond)},
-		{ID: "dev-chat", Name: "dev-chat", Type: "text", Topic: "Engineering, architecture, and releases", CreatedBy: "system", CreatedAt: now.Add(2 * time.Millisecond)},
-		{ID: "voice-lounge", Name: "Voice Lounge", Type: "voice", Topic: "Drop-in voice and video room", CreatedBy: "system", CreatedAt: now.Add(3 * time.Millisecond)},
-		{ID: "gaming", Name: "Gaming Room", Type: "voice", Topic: "Low-latency voice room", CreatedBy: "system", CreatedAt: now.Add(4 * time.Millisecond)},
+		{ID: "random", Name: "Random", Type: "text", Topic: "Open group chat", CreatedBy: "system", CreatedAt: now},
+		{ID: "voice-lounge", Name: "Voice Lounge", Type: "voice", Topic: "Drop-in voice and video group", CreatedBy: "system", CreatedAt: now.Add(time.Millisecond)},
 	}
+}
+
+func isLegacySystemChannel(id string) bool {
+	return id == "general" || id == "dev-chat" || id == "gaming"
+}
+
+func isDefaultProtectedChannel(id, createdBy string) bool {
+	return strings.EqualFold(createdBy, "system") || id == "random" || id == "voice-lounge"
 }
 
 func slugifyChannelID(name string) string {
@@ -98,7 +104,7 @@ type Store interface {
 	GetMessages(room string, limit int) ([]Message, error)
 	GetChannels() ([]Channel, error)
 	CreateChannel(ch Channel) error
-	DeleteChannel(id string) error
+	DeleteChannel(id, requestingUser string) error
 	Close() error
 }
 
@@ -152,14 +158,57 @@ func NewFileStore(filePath string) (*FileStore, error) {
 		}
 	}
 
-	if len(s.data.Channels) == 0 {
-		s.data.Channels = defaultChannels()
-		if filePath != "" {
-			_ = s.saveLocked()
-		}
+	if s.reconcileDefaultChannelsLocked() && filePath != "" {
+		_ = s.saveLocked()
 	}
 
 	return s, nil
+}
+
+// reconcileDefaultChannelsLocked cleans up legacy system-seeded channels (general, dev-chat, gaming)
+// while preserving any user-created channels, and guarantees random and voice-lounge exist.
+func (s *FileStore) reconcileDefaultChannelsLocked() bool {
+	changed := false
+	cleaned := make([]Channel, 0, len(s.data.Channels)+2)
+	present := make(map[string]bool)
+
+	for _, ch := range s.data.Channels {
+		if strings.EqualFold(ch.CreatedBy, "system") && isLegacySystemChannel(ch.ID) {
+			changed = true
+			continue
+		}
+		if ch.ID == "random" && strings.EqualFold(ch.CreatedBy, "system") {
+			if ch.Name != "Random" || ch.Topic != "Open group chat" {
+				ch.Name = "Random"
+				ch.Topic = "Open group chat"
+				changed = true
+			}
+		}
+		if ch.ID == "voice-lounge" && strings.EqualFold(ch.CreatedBy, "system") {
+			if ch.Name != "Voice Lounge" || ch.Topic != "Drop-in voice and video group" {
+				ch.Name = "Voice Lounge"
+				ch.Topic = "Drop-in voice and video group"
+				changed = true
+			}
+		}
+		cleaned = append(cleaned, ch)
+		present[ch.ID] = true
+	}
+
+	var missingDefaults []Channel
+	for _, def := range defaultChannels() {
+		if !present[def.ID] {
+			missingDefaults = append(missingDefaults, def)
+			changed = true
+		}
+	}
+
+	if len(missingDefaults) > 0 {
+		cleaned = append(missingDefaults, cleaned...)
+	}
+
+	s.data.Channels = cleaned
+	return changed
 }
 
 // NewStore creates a Store (FileStore) for backwards compatibility.
@@ -543,11 +592,9 @@ func (s *FileStore) CreateChannel(ch Channel) error {
 	return s.saveLocked()
 }
 
-// DeleteChannel deletes a channel by ID. Deleting "general" is rejected.
-func (s *FileStore) DeleteChannel(id string) error {
-	if id == "general" {
-		return errors.New("Cannot delete the default #general channel")
-	}
+// DeleteChannel deletes a channel by ID only if requestingUser is its creator.
+// Default system rooms (random, voice-lounge, or createdBy=system) cannot be deleted.
+func (s *FileStore) DeleteChannel(id, requestingUser string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := -1
@@ -559,6 +606,13 @@ func (s *FileStore) DeleteChannel(id string) error {
 	}
 	if idx == -1 {
 		return ErrChannelNotFound
+	}
+	ch := s.data.Channels[idx]
+	if isDefaultProtectedChannel(ch.ID, ch.CreatedBy) {
+		return fmt.Errorf("%w: Default rooms cannot be deleted", ErrChannelForbidden)
+	}
+	if !strings.EqualFold(ch.CreatedBy, requestingUser) {
+		return fmt.Errorf("%w: Only the creator of this room can delete it", ErrChannelForbidden)
 	}
 	s.data.Channels = append(s.data.Channels[:idx], s.data.Channels[idx+1:]...)
 	return s.saveLocked()
