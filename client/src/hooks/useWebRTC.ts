@@ -1,11 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Message, MessageType, PeerStream } from '../types';
 
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-  ],
-};
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+];
 
 interface UseWebRTCOptions {
   room: string;
@@ -36,6 +34,36 @@ export function useWebRTC({
   const candidateQueue = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const remoteStreamsMap = useRef<Map<string, MediaStream>>(new Map());
   const isInCallRef = useRef<boolean>(false);
+  const iceServersRef = useRef<RTCIceServer[]>(DEFAULT_ICE_SERVERS);
+
+  // Fetch dynamic ICE configuration (STUN/TURN) from server on mount
+  useEffect(() => {
+    let isCancelled = false;
+    const fetchIceConfig = async () => {
+      try {
+        const url =
+          typeof window !== 'undefined' && (window.location.port === '8080' || window.location.port === '')
+            ? '/api/config/ice'
+            : 'http://localhost:8080/api/config/ice';
+
+        const res = await fetch(url).catch(() => fetch('/api/config/ice'));
+        if (res.ok) {
+          const data = await res.json();
+          const servers = Array.isArray(data) ? data : data.iceServers;
+          if (!isCancelled && Array.isArray(servers) && servers.length > 0) {
+            iceServersRef.current = servers;
+          }
+        }
+      } catch {
+        // Silently keep DEFAULT_ICE_SERVERS fallback
+      }
+    };
+
+    fetchIceConfig();
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     isInCallRef.current = isInCall;
@@ -84,7 +112,9 @@ export function useWebRTC({
       return existing;
     }
 
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const pc = new RTCPeerConnection({
+      iceServers: iceServersRef.current,
+    });
 
     // Add local tracks to peer connection
     const currentStream = localStreamRef.current;

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ import (
 func TestHealthEndpoint(t *testing.T) {
 	hub := NewHub()
 	store, _ := NewStore("")
-	handler := setupRoutes(hub, store)
+	handler := setupRoutes(hub, store, "")
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -39,7 +40,7 @@ func TestHealthEndpoint(t *testing.T) {
 func TestMissingQueryParams(t *testing.T) {
 	hub := NewHub()
 	store, _ := NewStore("")
-	handler := setupRoutes(hub, store)
+	handler := setupRoutes(hub, store, "")
 
 	// Missing both
 	req := httptest.NewRequest("GET", "/ws", nil)
@@ -98,7 +99,8 @@ func readNextMessage(t *testing.T, ws *websocket.Conn, timeout time.Duration) Me
 func TestWebSocketWorkflow(t *testing.T) {
 	hub := NewHub()
 	store, _ := NewStore("")
-	server := httptest.NewServer(setupRoutes(hub, store))
+	hub.store = store
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
 	defer server.Close()
 
 	// 1. Alice connects to "general"
@@ -243,7 +245,7 @@ func doJSONRequest(handler http.Handler, method, path string, body any, token st
 func TestAuthEndpoints(t *testing.T) {
 	hub := NewHub()
 	store, _ := NewStore("")
-	handler := setupRoutes(hub, store)
+	handler := setupRoutes(hub, store, "")
 
 	// 1. Validation failure: short username
 	w := doJSONRequest(handler, "POST", "/api/auth/register", map[string]string{
@@ -333,7 +335,7 @@ func TestAuthEndpoints(t *testing.T) {
 func TestFriendsWorkflow(t *testing.T) {
 	hub := NewHub()
 	store, _ := NewStore("")
-	server := httptest.NewServer(setupRoutes(hub, store))
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
 	defer server.Close()
 
 	handler := server.Config.Handler
@@ -454,5 +456,53 @@ func TestFriendsWorkflow(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &aFriends)
 	if len(aFriends.Friends) != 0 {
 		t.Fatalf("expected 0 friends after remove, got %+v", aFriends.Friends)
+	}
+}
+
+func TestICEConfigAndSPA(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	handler := setupRoutes(hub, store, "")
+
+	// 1. GET /api/config/ice without TURN
+	w := doJSONRequest(handler, "GET", "/api/config/ice", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/config/ice, got %d", w.Code)
+	}
+	var iceRes ICEConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &iceRes); err != nil {
+		t.Fatalf("failed to decode ICE config: %v", err)
+	}
+	if len(iceRes.ICEServers) == 0 || len(iceRes.ICEServers[0].URLs) == 0 {
+		t.Fatalf("expected default STUN servers, got %+v", iceRes)
+	}
+
+	// 2. GET /api/config/ice with TURN env
+	os.Setenv("TURN_URL", "turn:turn.example.com:3478")
+	os.Setenv("TURN_USERNAME", "weconnect")
+	os.Setenv("TURN_CREDENTIAL", "secret")
+	defer func() {
+		os.Unsetenv("TURN_URL")
+		os.Unsetenv("TURN_USERNAME")
+		os.Unsetenv("TURN_CREDENTIAL")
+	}()
+
+	w = doJSONRequest(handler, "GET", "/api/config/ice", nil, "")
+	var turnRes ICEConfigResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &turnRes)
+	if len(turnRes.ICEServers) != 2 {
+		t.Fatalf("expected 2 ICE servers (STUN + TURN), got %d", len(turnRes.ICEServers))
+	}
+	if turnRes.ICEServers[1].URLs[0] != "turn:turn.example.com:3478" {
+		t.Fatalf("expected TURN url, got %v", turnRes.ICEServers[1].URLs)
+	}
+
+	// 3. SPA fallback serving: GET /channels/general
+	w = doJSONRequest(handler, "GET", "/channels/general", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for SPA fallback, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "WeConnect") {
+		t.Fatalf("expected WeConnect HTML page, got %s", w.Body.String())
 	}
 }

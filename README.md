@@ -8,33 +8,40 @@ A minimal, high-performance Discord-style real-time collaboration application fe
 
 ```
 WeConnect/
-├── server/               # Minimal Go WebSocket & Signaling Server
-│   ├── main.go          # HTTP server, /health & /ws endpoints, CORS middleware
+├── server/               # Go WebSocket, WebRTC Signaling & REST Server
+│   ├── main.go          # HTTP server, /health, /ws, /api routes, SPA static serving
 │   ├── hub.go           # Thread-safe Room management (sync.RWMutex), WebRTC signaling routing
 │   ├── client.go        # WebSocket connection wrapper with heartbeats & panic safety
+│   ├── store.go         # Common Store interface & atomic FileStore implementation
+│   ├── postgres_store.go# PostgreSQL store with pgxpool & automated schema migrations
 │   └── server_test.go   # Integration test suite with race detector coverage
 ├── client/               # React 19 + TypeScript + Vite + Tailwind CSS Frontend
 │   └── src/
 │       ├── types/       # Shared message protocol definitions
-│       ├── hooks/       # useSocket (WebSocket manager), useWebRTC (Mesh call manager)
-│       └── components/  # Discord UI: ChannelSidebar, ChatArea, UserList, VideoGrid, CallControls
-├── start.sh              # Unified service runner with health checks and graceful teardown
+│       ├── hooks/       # useSocket (WebSocket manager), useWebRTC (Mesh call manager), useAuth
+│       └── components/  # Discord UI: ChannelSidebar, ChatArea, UserList, VideoGrid, CallControls, FriendsView, AuthModal
+├── Dockerfile            # Multi-stage production build (Node -> Go -> Alpine)
+├── docker-compose.yml    # All-in-One containerized deployment with PostgreSQL
+├── start.sh              # Local development runner with health checks and graceful teardown
 └── README.md
 ```
 
 ### Backend (`server/`)
-- **Technology**: Go (`go1.26+`), `github.com/gorilla/websocket`.
-- **Thread Safety**: Complete room synchronization with `sync.RWMutex`.
+- **Technology**: Go (`go1.23+`), `github.com/gorilla/websocket`, `github.com/jackc/pgx/v5`.
+- **Dual Storage Engine (Dynamic Selection)**:
+  - **PostgreSQL**: Enabled when `DATABASE_URL` is set. Uses `pgxpool` with automatic schema migrations (`users`, `sessions`, `friendships`, `messages`).
+  - **FileStore**: Enabled when `DATABASE_URL` is empty. Thread-safe atomic JSON file storage (`data/store.json`) or in-memory, requiring zero external database setup for local testing.
 - **Signaling Hub**:
   - Broadcasts room chat and user join/leave presence notifications.
-  - Generates deduplicated user lists on membership changes.
   - Targeted 1-to-1 WebRTC signaling router (`data.target`) for SDP Offers, Answers, and ICE Candidates.
   - Automatically garbage-collects empty rooms.
+- **Single-Port Production Serving**:
+  - Serves static assets from `STATIC_DIR` (`client/dist`).
+  - Client-side routing fallback to `index.html` for single-port deployments.
 - **Resilience**:
   - Buffered client send queues (256 frames) with non-blocking dispatch to prevent backpressure blocking.
   - Gorilla WebSocket ping/pong heartbeats (`pongWait: 60s`, `pingPeriod: 54s`, `writeWait: 10s`).
   - Full panic recovery across read and write pumps.
-  - Strict HTTP status codes and error messaging.
 
 ### Frontend (`client/`)
 - **Technology**: React 19, TypeScript, Vite, Tailwind CSS v3, Lucide Icons.
@@ -43,7 +50,9 @@ WeConnect/
   - Text Channels: `#general`, `#random`, `#dev-chat` with instant switching and message history.
   - Online Presence: Active participant counter and real-time user list with status indicators.
   - Voice Channels: `🔊 Voice Lounge`, `🔊 Gaming` with integrated WebRTC mesh audio/video calling.
-  - Mesh WebRTC: Google STUN (`stun:stun.l.google.com:19302`), candidate buffering, mic mute toggle, camera toggle, screen sharing toggle via `getDisplayMedia`, and responsive participant video grid.
+  - Mesh WebRTC: Dynamic ICE server configuration from `GET /api/config/ice`, candidate buffering, mic mute toggle, camera toggle, screen sharing toggle via `getDisplayMedia`, and responsive video grid.
+  - Friends System: Discord-style sub-tabs (Online, All, Pending, Add Friend) with live status updates.
+  - Authentication: User registration, login modal, and persistent sessions.
 
 ---
 
@@ -53,7 +62,7 @@ Messages are exchanged over `ws://localhost:8080/ws?room=<room_name>&user=<usern
 
 ```json
 {
-  "type": "chat | join | leave | users | signal | error",
+  "type": "chat | join | leave | users | signal | friend_update | error",
   "room": "general",
   "sender": "alice",
   "content": "Hello everyone!",
@@ -79,37 +88,46 @@ Messages are exchanged over `ws://localhost:8080/ws?room=<room_name>&user=<usern
 
 ### Authentication
 - `POST /api/auth/register`: `{ username, password }` -> `201 Created` with `{ token, user: { username } }`
-- `POST /api/auth/login`: `{ username, password }` -> `200 OK` with `{ token, user: { username } }` (or `401 Unauthorized`)
+- `POST /api/auth/login`: `{ username, password }` -> `200 OK` with `{ token, user: { username } }`
 - `GET /api/auth/me`: `Authorization: Bearer <token>` -> `200 OK` with `{ user: { username } }`
 
 ### Friends Management
-*All friends endpoints require `Authorization: Bearer <token>`.*
+*Requires `Authorization: Bearer <token>`.*
 - `GET /api/friends`: Returns `{ friends: [{ username, online }], incoming: [...], outgoing: [...] }`
 - `POST /api/friends/request`: `{ targetUsername }` -> sends a pending friend request
 - `POST /api/friends/accept`: `{ fromUsername }` -> accepts an incoming friend request
 - `POST /api/friends/reject`: `{ fromUsername }` -> declines/cancels a friend request
 - `POST /api/friends/remove`: `{ friendUsername }` -> removes an accepted friendship
 
+### System & Configuration
+- `GET /health`: Health status, active room and client counts.
+- `GET /api/config/ice`: Returns dynamic ICE servers (Google STUN + optional TURN).
+- `GET /api/messages?room=<name>&limit=50`: Retrieves chat history for a channel.
+
 ---
 
-## Getting Started
+## Deployment & Running
 
-### Prerequisites
-- **Go**: 1.22 or higher (installed at `/usr/local/go/bin` or in system `$PATH`).
-- **Node.js**: v18+ and `npm`.
+### Option 1: Docker Compose (All-in-One + PostgreSQL)
+Run the full production stack with a single command:
 
-### One-Command Quickstart
-Run the bundled start script to launch both backend and frontend:
+```bash
+docker compose up --build
+```
+
+- **App**: Available at `http://localhost:8080` (serves both API/WebSocket and built SPA).
+- **Database**: PostgreSQL 16 on port 5432 with health check and persistent volume `pgdata`.
+
+### Option 2: Local Development Script
+Run the local dev script for hot reloading:
 
 ```bash
 ./start.sh
 ```
 
-The script will:
-1. Compile and launch the Go backend on `http://localhost:8080`.
-2. Perform an automated `/health` check.
-3. Launch the Vite frontend on `http://localhost:5173`.
-4. Gracefully terminate both processes when you press `Ctrl+C`.
+- Launches the Go backend on `http://localhost:8080`.
+- Launches the Vite dev server on `http://localhost:5173`.
+- Press `Ctrl+C` to terminate both services cleanly.
 
 ---
 
@@ -120,13 +138,13 @@ The script will:
 cd server
 export PATH=/usr/local/go/bin:$PATH
 
-# Run all tests with data race detector
+# Run tests with race detection
 go test -v -race ./...
 
 # Build server binary
-go build -o server .
+go build -buildvcs=false -o server .
 
-# Run server
+# Run server (defaults to local file store)
 ./server
 ```
 
@@ -137,9 +155,9 @@ cd client
 # Install dependencies
 npm install
 
-# Run development server
+# Run dev server
 npm run dev
 
-# Run production build and type checking
+# Run production build
 npm run build
 ```

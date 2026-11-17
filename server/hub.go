@@ -30,6 +30,7 @@ type Room struct {
 type Hub struct {
 	mu    sync.RWMutex
 	rooms map[string]*Room
+	store Store
 }
 
 // NewHub constructs a new Hub instance.
@@ -147,6 +148,10 @@ func (h *Hub) Unregister(client *Client) {
 func (h *Hub) BroadcastToRoom(roomName string, msg Message) {
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
+	}
+
+	if h.store != nil && msg.Type == "chat" {
+		_ = h.store.SaveMessage(msg)
 	}
 
 	data, err := json.Marshal(msg)

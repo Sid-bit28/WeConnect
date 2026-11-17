@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -56,7 +61,7 @@ func extractBearerToken(r *http.Request) string {
 	return ""
 }
 
-func requireAuth(store *Store, next func(w http.ResponseWriter, r *http.Request, user *User)) http.HandlerFunc {
+func requireAuth(store Store, next func(w http.ResponseWriter, r *http.Request, user *User)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearerToken(r)
 		if token == "" {
@@ -115,7 +120,7 @@ type AuthRequest struct {
 	Password string `json:"password"`
 }
 
-func registerHandler(store *Store) http.HandlerFunc {
+func registerHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -147,7 +152,7 @@ func registerHandler(store *Store) http.HandlerFunc {
 	}
 }
 
-func loginHandler(store *Store) http.HandlerFunc {
+func loginHandler(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -175,7 +180,7 @@ func loginHandler(store *Store) http.HandlerFunc {
 	}
 }
 
-func meHandler(store *Store) http.HandlerFunc {
+func meHandler(store Store) http.HandlerFunc {
 	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -192,7 +197,7 @@ func meHandler(store *Store) http.HandlerFunc {
 
 // --- Friends Handlers ---
 
-func getFriendsHandler(store *Store, hub *Hub) http.HandlerFunc {
+func getFriendsHandler(store Store, hub *Hub) http.HandlerFunc {
 	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -232,7 +237,7 @@ func (f *FriendActionRequest) Friend() string {
 	return f.Username
 }
 
-func friendRequestHandler(store *Store, hub *Hub) http.HandlerFunc {
+func friendRequestHandler(store Store, hub *Hub) http.HandlerFunc {
 	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -256,7 +261,6 @@ func friendRequestHandler(store *Store, hub *Hub) http.HandlerFunc {
 			return
 		}
 
-		// Notify target user via Hub if connected
 		hub.NotifyUser(target, Message{
 			Type:      "friend_update",
 			Sender:    "system",
@@ -272,7 +276,7 @@ func friendRequestHandler(store *Store, hub *Hub) http.HandlerFunc {
 	})
 }
 
-func friendAcceptHandler(store *Store, hub *Hub) http.HandlerFunc {
+func friendAcceptHandler(store Store, hub *Hub) http.HandlerFunc {
 	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -296,7 +300,6 @@ func friendAcceptHandler(store *Store, hub *Hub) http.HandlerFunc {
 			return
 		}
 
-		// Notify requester via Hub if connected
 		hub.NotifyUser(from, Message{
 			Type:      "friend_update",
 			Sender:    "system",
@@ -312,7 +315,7 @@ func friendAcceptHandler(store *Store, hub *Hub) http.HandlerFunc {
 	})
 }
 
-func friendRejectHandler(store *Store, hub *Hub) http.HandlerFunc {
+func friendRejectHandler(store Store, hub *Hub) http.HandlerFunc {
 	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -339,7 +342,6 @@ func friendRejectHandler(store *Store, hub *Hub) http.HandlerFunc {
 			return
 		}
 
-		// Notify other user via Hub if connected
 		hub.NotifyUser(other, Message{
 			Type:      "friend_update",
 			Sender:    "system",
@@ -355,7 +357,7 @@ func friendRejectHandler(store *Store, hub *Hub) http.HandlerFunc {
 	})
 }
 
-func friendRemoveHandler(store *Store, hub *Hub) http.HandlerFunc {
+func friendRemoveHandler(store Store, hub *Hub) http.HandlerFunc {
 	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -379,7 +381,6 @@ func friendRemoveHandler(store *Store, hub *Hub) http.HandlerFunc {
 			return
 		}
 
-		// Notify friend via Hub if connected
 		hub.NotifyUser(friend, Message{
 			Type:      "friend_update",
 			Sender:    "system",
@@ -395,13 +396,127 @@ func friendRemoveHandler(store *Store, hub *Hub) http.HandlerFunc {
 	})
 }
 
-// setupRoutes configures HTTP routes with Hub and Store.
-func setupRoutes(hub *Hub, store *Store) http.Handler {
+// --- ICE Configuration Handler ---
+
+type ICEServer struct {
+	URLs       []string `json:"urls"`
+	Username   string   `json:"username,omitempty"`
+	Credential string   `json:"credential,omitempty"`
+}
+
+type ICEConfigResponse struct {
+	ICEServers []ICEServer `json:"iceServers"`
+}
+
+func iceConfigHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		servers := []ICEServer{
+			{
+				URLs: []string{
+					"stun:stun.l.google.com:19302",
+					"stun:stun1.l.google.com:19302",
+				},
+			},
+		}
+
+		turnURL := os.Getenv("TURN_URL")
+		if turnURL != "" {
+			servers = append(servers, ICEServer{
+				URLs:       []string{turnURL},
+				Username:   os.Getenv("TURN_USERNAME"),
+				Credential: os.Getenv("TURN_CREDENTIAL"),
+			})
+		}
+
+		writeJSON(w, http.StatusOK, ICEConfigResponse{
+			ICEServers: servers,
+		})
+	}
+}
+
+// --- Chat Messages History Handler ---
+
+func messagesHandler(store Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+
+		room := strings.TrimSpace(r.URL.Query().Get("room"))
+		if room == "" {
+			writeError(w, http.StatusBadRequest, "room query parameter is required")
+			return
+		}
+
+		limit := 50
+		if lStr := r.URL.Query().Get("limit"); lStr != "" {
+			if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 100 {
+				limit = l
+			}
+		}
+
+		msgs, err := store.GetMessages(room, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to retrieve messages")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"messages": msgs,
+		})
+	}
+}
+
+// --- Single-Port Static SPA Handler ---
+
+func spaHandler(staticDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Clean URL path
+		path := filepath.Clean(r.URL.Path)
+
+		// Don't serve directories or files if staticDir doesn't exist
+		if staticDir != "" {
+			targetPath := filepath.Join(staticDir, path)
+			if info, err := os.Stat(targetPath); err == nil && !info.IsDir() {
+				http.ServeFile(w, r, targetPath)
+				return
+			}
+
+			// SPA fallback: index.html
+			indexPath := filepath.Join(staticDir, "index.html")
+			if _, err := os.Stat(indexPath); err == nil {
+				http.ServeFile(w, r, indexPath)
+				return
+			}
+		}
+
+		// Friendly default page if static directory or index.html is missing
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head><title>WeConnect</title></head>
+<body style="font-family:sans-serif;background:#1e1f22;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+  <div style="text-align:center;">
+    <h1>WeConnect Backend Server</h1>
+    <p>API &amp; WebSocket active on port 8080.</p>
+  </div>
+</body>
+</html>`))
+	}
+}
+
+// setupRoutes configures HTTP routes with Hub, Store, and SPA serving.
+func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
 	mux := http.NewServeMux()
 
 	// Base endpoints
 	mux.HandleFunc("/health", healthHandler(hub))
 	mux.HandleFunc("/ws", wsHandler(hub))
+
+	// Config endpoints
+	mux.HandleFunc("/api/config/ice", iceConfigHandler())
 
 	// Auth endpoints
 	mux.HandleFunc("/api/auth/register", registerHandler(store))
@@ -415,7 +530,21 @@ func setupRoutes(hub *Hub, store *Store) http.Handler {
 	mux.HandleFunc("/api/friends/reject", friendRejectHandler(store, hub))
 	mux.HandleFunc("/api/friends/remove", friendRemoveHandler(store, hub))
 
+	// Messages endpoint
+	mux.HandleFunc("/api/messages", messagesHandler(store))
+
+	// Single-Port SPA serving
+	mux.HandleFunc("/", spaHandler(staticDir))
+
 	return corsMiddleware(mux)
+}
+
+func maskDBURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "postgresql://***"
+	}
+	return u.Redacted()
 }
 
 func main() {
@@ -425,20 +554,59 @@ func main() {
 	}
 	addr := ":" + port
 
-	dataPath := os.Getenv("DATA_PATH")
-	if dataPath == "" {
-		dataPath = "data/store.json"
-	}
+	var store Store
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL != "" {
+		log.Printf("[Server] Initializing PostgreSQL connection: %s...", maskDBURL(dbURL))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	store, err := NewStore(dataPath)
-	if err != nil {
-		log.Fatalf("[Server] Failed to initialize store: %v", err)
+		pgStore, err := NewPostgresStore(ctx, dbURL)
+		if err != nil {
+			log.Fatalf("[Server] Failed to connect to PostgreSQL: %v", err)
+		}
+		store = pgStore
+		log.Printf("[Server] PostgreSQL storage connected with auto-migration.")
+	} else {
+		dataPath := os.Getenv("DATA_PATH")
+		if dataPath == "" {
+			dataPath = "data/store.json"
+		}
+
+		fileStore, err := NewFileStore(dataPath)
+		if err != nil {
+			log.Fatalf("[Server] Failed to initialize file store: %v", err)
+		}
+		store = fileStore
+		log.Printf("[Server] File storage initialized (store: %s).", dataPath)
+	}
+	defer store.Close()
+
+	staticDir := os.Getenv("STATIC_DIR")
+	if staticDir == "" {
+		// Look for client/dist relative to project root or cwd
+		candidates := []string{
+			"static",
+			"../client/dist",
+			"client/dist",
+			"/app/static",
+		}
+		for _, cand := range candidates {
+			if info, err := os.Stat(cand); err == nil && info.IsDir() {
+				staticDir = cand
+				break
+			}
+		}
+	}
+	if staticDir != "" {
+		log.Printf("[Server] Single-port SPA static file serving enabled from %s", staticDir)
 	}
 
 	hub := NewHub()
-	handler := setupRoutes(hub, store)
+	hub.store = store
+	handler := setupRoutes(hub, store, staticDir)
 
-	log.Printf("[Server] WeConnect WebSocket server starting on %s (store: %s)...", addr, dataPath)
+	log.Printf("[Server] WeConnect full-stack server listening on %s...", addr)
 	if err := http.ListenAndServe(addr, handler); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("[Server] Server error: %v", err)
 	}

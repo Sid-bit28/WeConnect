@@ -23,7 +23,7 @@ type User struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
-// Friendship represents a directional or bidirectional relationship between two users.
+// Friendship represents a relationship between two users.
 type Friendship struct {
 	ID        string    `json:"id"`
 	Requester string    `json:"requester"` // username who sent the request
@@ -32,28 +32,46 @@ type Friendship struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// StoreData represents the persisted JSON structure.
+// StoreData represents the persisted JSON structure for FileStore.
 type StoreData struct {
-	Users       map[string]*User       `json:"users"`       // normalized username -> User
-	Friendships map[string]*Friendship `json:"friendships"` // canonical key -> Friendship
-	Tokens      map[string]string      `json:"tokens"`      // token -> normalized username
+	Users       map[string]*User       `json:"users"`              // normalized username -> User
+	Friendships map[string]*Friendship `json:"friendships"`        // canonical key -> Friendship
+	Tokens      map[string]string      `json:"tokens"`             // token -> normalized username
+	Messages    []Message              `json:"messages,omitempty"` // chat message history
 }
 
-// Store handles thread-safe data persistence for users, sessions, and friendships.
-type Store struct {
+// Store is the common interface implemented by FileStore and PostgresStore.
+type Store interface {
+	Register(username, password string) (*User, string, error)
+	Login(username, password string) (*User, string, error)
+	AuthenticateToken(token string) (*User, error)
+	UserExists(username string) bool
+	SendFriendRequest(requester, receiver string) error
+	AcceptFriendRequest(receiver, requester string) error
+	RejectFriendRequest(currentUser, otherUser string) error
+	RemoveFriend(currentUser, friendUser string) error
+	GetFriends(username string, isOnline func(string) bool) FriendsData
+	SaveMessage(msg Message) error
+	GetMessages(room string, limit int) ([]Message, error)
+	Close() error
+}
+
+// FileStore handles thread-safe data persistence using an atomic JSON file or in-memory.
+type FileStore struct {
 	mu       sync.RWMutex
 	filePath string
 	data     StoreData
 }
 
-// NewStore creates or loads a store from the given file path. If filePath is empty, runs purely in-memory.
-func NewStore(filePath string) (*Store, error) {
-	s := &Store{
+// NewFileStore creates or loads a file-backed store. If filePath is empty, runs purely in-memory.
+func NewFileStore(filePath string) (*FileStore, error) {
+	s := &FileStore{
 		filePath: filePath,
 		data: StoreData{
 			Users:       make(map[string]*User),
 			Friendships: make(map[string]*Friendship),
 			Tokens:      make(map[string]string),
+			Messages:    make([]Message, 0),
 		},
 	}
 
@@ -83,12 +101,20 @@ func NewStore(filePath string) (*Store, error) {
 		if s.data.Tokens == nil {
 			s.data.Tokens = make(map[string]string)
 		}
+		if s.data.Messages == nil {
+			s.data.Messages = make([]Message, 0)
+		}
 	}
 
 	return s, nil
 }
 
-func (s *Store) saveLocked() error {
+// NewStore creates a Store (FileStore) for backwards compatibility.
+func NewStore(filePath string) (Store, error) {
+	return NewFileStore(filePath)
+}
+
+func (s *FileStore) saveLocked() error {
 	if s.filePath == "" {
 		return nil
 	}
@@ -152,7 +178,7 @@ func generateToken() (string, error) {
 }
 
 // Register creates a new user account with a hashed password and returns an auth session token.
-func (s *Store) Register(username, password string) (*User, string, error) {
+func (s *FileStore) Register(username, password string) (*User, string, error) {
 	normUser := normalizeUsername(username)
 	if len(normUser) < 3 {
 		return nil, "", errors.New("Username must be at least 3 characters")
@@ -195,7 +221,7 @@ func (s *Store) Register(username, password string) (*User, string, error) {
 }
 
 // Login verifies user credentials and returns a new session token.
-func (s *Store) Login(username, password string) (*User, string, error) {
+func (s *FileStore) Login(username, password string) (*User, string, error) {
 	normUser := normalizeUsername(username)
 
 	s.mu.Lock()
@@ -220,7 +246,7 @@ func (s *Store) Login(username, password string) (*User, string, error) {
 }
 
 // AuthenticateToken resolves a bearer token to a User.
-func (s *Store) AuthenticateToken(token string) (*User, error) {
+func (s *FileStore) AuthenticateToken(token string) (*User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -238,7 +264,7 @@ func (s *Store) AuthenticateToken(token string) (*User, error) {
 }
 
 // UserExists checks if a username is registered.
-func (s *Store) UserExists(username string) bool {
+func (s *FileStore) UserExists(username string) bool {
 	normUser := normalizeUsername(username)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -247,7 +273,7 @@ func (s *Store) UserExists(username string) bool {
 }
 
 // SendFriendRequest creates a pending friend request from requester to receiver.
-func (s *Store) SendFriendRequest(requester, receiver string) error {
+func (s *FileStore) SendFriendRequest(requester, receiver string) error {
 	normReq := normalizeUsername(requester)
 	normRec := normalizeUsername(receiver)
 
@@ -287,7 +313,7 @@ func (s *Store) SendFriendRequest(requester, receiver string) error {
 }
 
 // AcceptFriendRequest accepts an incoming pending friend request.
-func (s *Store) AcceptFriendRequest(receiver, requester string) error {
+func (s *FileStore) AcceptFriendRequest(receiver, requester string) error {
 	normRec := normalizeUsername(receiver)
 	normReq := normalizeUsername(requester)
 
@@ -305,7 +331,7 @@ func (s *Store) AcceptFriendRequest(receiver, requester string) error {
 }
 
 // RejectFriendRequest declines or cancels a pending friend request.
-func (s *Store) RejectFriendRequest(currentUser, otherUser string) error {
+func (s *FileStore) RejectFriendRequest(currentUser, otherUser string) error {
 	normCur := normalizeUsername(currentUser)
 	normOth := normalizeUsername(otherUser)
 
@@ -327,7 +353,7 @@ func (s *Store) RejectFriendRequest(currentUser, otherUser string) error {
 }
 
 // RemoveFriend deletes an accepted friendship between two users.
-func (s *Store) RemoveFriend(currentUser, friendUser string) error {
+func (s *FileStore) RemoveFriend(currentUser, friendUser string) error {
 	normCur := normalizeUsername(currentUser)
 	normFri := normalizeUsername(friendUser)
 
@@ -370,7 +396,7 @@ type FriendsData struct {
 }
 
 // GetFriends returns accepted friends, incoming pending requests, and outgoing pending requests.
-func (s *Store) GetFriends(username string, isOnline func(string) bool) FriendsData {
+func (s *FileStore) GetFriends(username string, isOnline func(string) bool) FriendsData {
 	normUser := normalizeUsername(username)
 
 	s.mu.RLock()
@@ -413,4 +439,33 @@ func (s *Store) GetFriends(username string, isOnline func(string) bool) FriendsD
 	}
 
 	return res
+}
+
+// SaveMessage appends a chat message to history.
+func (s *FileStore) SaveMessage(msg Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.Messages = append(s.data.Messages, msg)
+	return s.saveLocked()
+}
+
+// GetMessages returns the latest messages for a room.
+func (s *FileStore) GetMessages(room string, limit int) ([]Message, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	var res []Message
+	for i := len(s.data.Messages) - 1; i >= 0 && len(res) < limit; i-- {
+		if s.data.Messages[i].Room == room {
+			res = append([]Message{s.data.Messages[i]}, res...)
+		}
+	}
+	return res, nil
+}
+
+// Close is a no-op for FileStore.
+func (s *FileStore) Close() error {
+	return nil
 }
