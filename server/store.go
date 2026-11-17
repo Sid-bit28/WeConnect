@@ -36,6 +36,8 @@ var (
 	ErrChannelExists    = errors.New("Channel already exists")
 	ErrChannelNotFound  = errors.New("Channel not found")
 	ErrChannelForbidden = errors.New("Forbidden")
+	ErrMessageNotFound  = errors.New("Message not found")
+	ErrMessageForbidden = errors.New("Forbidden")
 )
 
 // Channel represents a text or voice channel in the workspace.
@@ -102,6 +104,10 @@ type Store interface {
 	GetFriends(username string, isOnline func(string) bool) FriendsData
 	SaveMessage(msg Message) error
 	GetMessages(room string, limit int) ([]Message, error)
+	EditMessage(msgID, room, requestingUser, newContent string) (*Message, error)
+	DeleteMessage(msgID, room, requestingUser string) error
+	ToggleReaction(msgID, room, username, emoji string) (*Message, error)
+	SearchMessages(room, query string, limit int) ([]Message, error)
 	GetChannels() ([]Channel, error)
 	CreateChannel(ch Channel) error
 	DeleteChannel(id, requestingUser string) error
@@ -565,6 +571,182 @@ func (s *FileStore) GetMessages(room string, limit int) ([]Message, error) {
 	for i := len(s.data.Messages) - 1; i >= 0 && len(res) < limit; i-- {
 		if s.data.Messages[i].Room == room {
 			res = append([]Message{s.data.Messages[i]}, res...)
+		}
+	}
+	return res, nil
+}
+
+// ensureDataMap clones or converts Message.Data into a mutable map[string]any.
+func ensureDataMap(data any) map[string]any {
+	out := make(map[string]any)
+	if data == nil {
+		return out
+	}
+	if m, ok := data.(map[string]any); ok {
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	}
+	if raw, err := json.Marshal(data); err == nil {
+		_ = json.Unmarshal(raw, &out)
+	}
+	return out
+}
+
+// toggleReactionInData toggles username in data["reactions"][emoji] and prunes empty entries.
+func toggleReactionInData(data any, username, emoji string) map[string]any {
+	m := ensureDataMap(data)
+	reactions := make(map[string][]string)
+
+	if rawReacts, exists := m["reactions"]; exists && rawReacts != nil {
+		switch rm := rawReacts.(type) {
+		case map[string][]string:
+			for k, users := range rm {
+				cp := make([]string, len(users))
+				copy(cp, users)
+				reactions[k] = cp
+			}
+		case map[string]any:
+			for k, v := range rm {
+				switch arr := v.(type) {
+				case []string:
+					cp := make([]string, len(arr))
+					copy(cp, arr)
+					reactions[k] = cp
+				case []any:
+					list := make([]string, 0, len(arr))
+					for _, item := range arr {
+						if u, ok := item.(string); ok && u != "" {
+							list = append(list, u)
+						}
+					}
+					if len(list) > 0 {
+						reactions[k] = list
+					}
+				}
+			}
+		}
+	}
+
+	users := reactions[emoji]
+	foundIdx := -1
+	for i, u := range users {
+		if strings.EqualFold(u, username) {
+			foundIdx = i
+			break
+		}
+	}
+
+	if foundIdx >= 0 {
+		users = append(users[:foundIdx], users[foundIdx+1:]...)
+	} else {
+		users = append(users, username)
+	}
+
+	if len(users) == 0 {
+		delete(reactions, emoji)
+	} else {
+		reactions[emoji] = users
+	}
+
+	if len(reactions) == 0 {
+		delete(m, "reactions")
+	} else {
+		m["reactions"] = reactions
+	}
+	return m
+}
+
+// EditMessage updates a message's content if requestingUser is its author and sets data.edited = true.
+func (s *FileStore) EditMessage(msgID, room, requestingUser, newContent string) (*Message, error) {
+	trimmed := strings.TrimSpace(newContent)
+	if trimmed == "" {
+		return nil, errors.New("Message content cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Messages {
+		m := &s.data.Messages[i]
+		if m.ID == msgID && m.Room == room {
+			if !strings.EqualFold(m.Sender, requestingUser) {
+				return nil, fmt.Errorf("%w: Only the author can edit this message", ErrMessageForbidden)
+			}
+			m.Content = trimmed
+			dataMap := ensureDataMap(m.Data)
+			dataMap["edited"] = true
+			m.Data = dataMap
+			if err := s.saveLocked(); err != nil {
+				return nil, err
+			}
+			cp := *m
+			return &cp, nil
+		}
+	}
+	return nil, ErrMessageNotFound
+}
+
+// DeleteMessage deletes a message if requestingUser is its author.
+func (s *FileStore) DeleteMessage(msgID, room, requestingUser string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Messages {
+		m := s.data.Messages[i]
+		if m.ID == msgID && m.Room == room {
+			if !strings.EqualFold(m.Sender, requestingUser) {
+				return fmt.Errorf("%w: Only the author can delete this message", ErrMessageForbidden)
+			}
+			s.data.Messages = append(s.data.Messages[:i], s.data.Messages[i+1:]...)
+			return s.saveLocked()
+		}
+	}
+	return ErrMessageNotFound
+}
+
+// ToggleReaction adds or removes username's emoji reaction on a message.
+func (s *FileStore) ToggleReaction(msgID, room, username, emoji string) (*Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Messages {
+		m := &s.data.Messages[i]
+		if m.ID == msgID && m.Room == room {
+			m.Data = toggleReactionInData(m.Data, username, emoji)
+			if err := s.saveLocked(); err != nil {
+				return nil, err
+			}
+			cp := *m
+			return &cp, nil
+		}
+	}
+	return nil, ErrMessageNotFound
+}
+
+// SearchMessages performs a case-insensitive substring search in room messages.
+func (s *FileStore) SearchMessages(room, query string, limit int) ([]Message, error) {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	res := make([]Message, 0)
+	if q == "" {
+		return res, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for i := len(s.data.Messages) - 1; i >= 0 && len(res) < limit; i-- {
+		m := s.data.Messages[i]
+		if m.Room == room && strings.Contains(strings.ToLower(m.Content), q) {
+			res = append(res, m)
 		}
 	}
 	return res, nil

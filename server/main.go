@@ -571,9 +571,199 @@ func channelsHandler(store Store, hub *Hub) http.HandlerFunc {
 	})
 }
 
-// --- Chat Messages History Handler ---
+// --- Chat Messages History, Edit, Delete, Reactions & Search Handlers ---
 
-func messagesHandler(store Store) http.HandlerFunc {
+type EditMessageRequest struct {
+	ID      string `json:"id"`
+	Room    string `json:"room"`
+	Content string `json:"content"`
+}
+
+type ReactMessageRequest struct {
+	ID    string `json:"id"`
+	Room  string `json:"room"`
+	Emoji string `json:"emoji"`
+}
+
+func messagesHandler(store Store, hub *Hub) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		switch r.Method {
+		case http.MethodGet:
+			room := strings.TrimSpace(r.URL.Query().Get("room"))
+			if room == "" {
+				writeError(w, http.StatusBadRequest, "room query parameter is required")
+				return
+			}
+
+			if !isAuthorizedForRoom(room, user.Username) {
+				writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
+				return
+			}
+
+			limit := 50
+			if lStr := r.URL.Query().Get("limit"); lStr != "" {
+				if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 100 {
+					limit = l
+				}
+			}
+
+			msgs, err := store.GetMessages(room, limit)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "Failed to retrieve messages")
+				return
+			}
+
+			writeJSON(w, http.StatusOK, map[string]any{
+				"messages": msgs,
+			})
+
+		case http.MethodPut:
+			var req EditMessageRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "Invalid JSON request body")
+				return
+			}
+
+			id := strings.TrimSpace(req.ID)
+			room := strings.TrimSpace(req.Room)
+			content := strings.TrimSpace(req.Content)
+			if id == "" || room == "" || content == "" {
+				writeError(w, http.StatusBadRequest, "id, room, and non-empty content are required")
+				return
+			}
+
+			if !isAuthorizedForRoom(room, user.Username) {
+				writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
+				return
+			}
+
+			updated, err := store.EditMessage(id, room, user.Username, content)
+			if err != nil {
+				switch {
+				case errors.Is(err, ErrMessageNotFound):
+					writeError(w, http.StatusNotFound, "Message not found")
+				case errors.Is(err, ErrMessageForbidden):
+					msg := strings.TrimPrefix(err.Error(), ErrMessageForbidden.Error()+": ")
+					writeError(w, http.StatusForbidden, msg)
+				default:
+					writeError(w, http.StatusBadRequest, err.Error())
+				}
+				return
+			}
+
+			hub.BroadcastToRoom(updated.Room, Message{
+				ID:        updated.ID,
+				Type:      "message_update",
+				Room:      updated.Room,
+				Sender:    updated.Sender,
+				Content:   updated.Content,
+				Data:      updated.Data,
+				Timestamp: updated.Timestamp,
+			})
+
+			writeJSON(w, http.StatusOK, map[string]any{
+				"message": updated,
+			})
+
+		case http.MethodDelete:
+			id := strings.TrimSpace(r.URL.Query().Get("id"))
+			room := strings.TrimSpace(r.URL.Query().Get("room"))
+			if id == "" || room == "" {
+				writeError(w, http.StatusBadRequest, "id and room query parameters are required")
+				return
+			}
+
+			if !isAuthorizedForRoom(room, user.Username) {
+				writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
+				return
+			}
+
+			if err := store.DeleteMessage(id, room, user.Username); err != nil {
+				switch {
+				case errors.Is(err, ErrMessageNotFound):
+					writeError(w, http.StatusNotFound, "Message not found")
+				case errors.Is(err, ErrMessageForbidden):
+					msg := strings.TrimPrefix(err.Error(), ErrMessageForbidden.Error()+": ")
+					writeError(w, http.StatusForbidden, msg)
+				default:
+					writeError(w, http.StatusInternalServerError, "Failed to delete message")
+				}
+				return
+			}
+
+			hub.BroadcastToRoom(room, Message{
+				ID:        id,
+				Type:      "message_delete",
+				Room:      room,
+				Sender:    user.Username,
+				Timestamp: time.Now().UnixMilli(),
+			})
+
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "ok",
+				"id":     id,
+				"room":   room,
+			})
+
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	})
+}
+
+func reactMessageHandler(store Store, hub *Hub) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+
+		var req ReactMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid JSON request body")
+			return
+		}
+
+		id := strings.TrimSpace(req.ID)
+		room := strings.TrimSpace(req.Room)
+		emoji := strings.TrimSpace(req.Emoji)
+		if id == "" || room == "" || emoji == "" || len([]rune(emoji)) > 16 {
+			writeError(w, http.StatusBadRequest, "id, room, and a valid emoji (<= 16 chars) are required")
+			return
+		}
+
+		if !isAuthorizedForRoom(room, user.Username) {
+			writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
+			return
+		}
+
+		updated, err := store.ToggleReaction(id, room, user.Username, emoji)
+		if err != nil {
+			if errors.Is(err, ErrMessageNotFound) {
+				writeError(w, http.StatusNotFound, "Message not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "Failed to toggle reaction")
+			}
+			return
+		}
+
+		hub.BroadcastToRoom(updated.Room, Message{
+			ID:        updated.ID,
+			Type:      "message_update",
+			Room:      updated.Room,
+			Sender:    updated.Sender,
+			Content:   updated.Content,
+			Data:      updated.Data,
+			Timestamp: updated.Timestamp,
+		})
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message": updated,
+		})
+	})
+}
+
+func searchMessagesHandler(store Store) http.HandlerFunc {
 	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -591,16 +781,17 @@ func messagesHandler(store Store) http.HandlerFunc {
 			return
 		}
 
-		limit := 50
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		limit := 30
 		if lStr := r.URL.Query().Get("limit"); lStr != "" {
 			if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 100 {
 				limit = l
 			}
 		}
 
-		msgs, err := store.GetMessages(room, limit)
+		msgs, err := store.SearchMessages(room, q, limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Failed to retrieve messages")
+			writeError(w, http.StatusInternalServerError, "Failed to search messages")
 			return
 		}
 
@@ -678,7 +869,9 @@ func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
 
 	// Channels & Messages endpoints
 	mux.HandleFunc("/api/channels", channelsHandler(store, hub))
-	mux.HandleFunc("/api/messages", messagesHandler(store))
+	mux.HandleFunc("/api/messages", messagesHandler(store, hub))
+	mux.HandleFunc("/api/messages/react", reactMessageHandler(store, hub))
+	mux.HandleFunc("/api/messages/search", searchMessagesHandler(store))
 
 	// Uploads & GIF endpoints
 	uploadDir := strings.TrimSpace(os.Getenv("UPLOAD_DIR"))

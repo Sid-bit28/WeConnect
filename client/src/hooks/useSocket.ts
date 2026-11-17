@@ -205,6 +205,28 @@ export function useSocket(
               });
               break;
 
+            case 'message_update':
+              if (msg.id) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === msg.id
+                      ? {
+                          ...m,
+                          content: msg.content !== undefined ? msg.content : m.content,
+                          data: msg.data !== undefined ? msg.data : m.data,
+                        }
+                      : m
+                  )
+                );
+              }
+              break;
+
+            case 'message_delete':
+              if (msg.id) {
+                setMessages((prev) => prev.filter((m) => m.id !== msg.id));
+              }
+              break;
+
             case 'typing': {
               const sender = msg.sender;
               if (!sender || sender.toLowerCase() === username.toLowerCase()) {

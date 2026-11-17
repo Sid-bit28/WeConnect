@@ -10,7 +10,9 @@ export type MessageType =
   | "friend_update"
   | "typing"
   | "unread"
-  | "channel_update";
+  | "channel_update"
+  | "message_update"
+  | "message_delete";
 
 export interface Attachment {
   url: string;
@@ -31,12 +33,18 @@ export interface GifData {
   title: string;
 }
 
+export interface ReplyToData {
+  id: string;
+  sender: string;
+  content: string;
+}
+
 export interface MessageData {
   attachment?: Attachment;
   attachments?: Attachment[];
   sticker?: StickerData;
   gif?: GifData;
-  replyTo?: any;
+  replyTo?: ReplyToData;
   reactions?: Record<string, string[]>;
   edited?: boolean;
   [key: string]: any;

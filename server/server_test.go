@@ -1308,3 +1308,183 @@ func TestRichMessagePersistence(t *testing.T) {
 		t.Fatalf("expected rich DM unread preview 'Sent sticker: Wave', got %+v", bobUnread)
 	}
 }
+
+func TestMessageEditDeleteReactAndSearch(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+	_, aliceToken, _ := store.Register("alice", "password123")
+	_, bobToken, _ := store.Register("bob", "password123")
+	_, charlieToken, _ := store.Register("charlie", "password123")
+
+	aliceWS := connectWS(t, server.URL, "random", aliceToken)
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	bobWS := connectWS(t, server.URL, "random", bobToken)
+	defer bobWS.Close()
+	_ = readNextMessage(t, bobWS, 2*time.Second)   // join
+	_ = readNextMessage(t, bobWS, 2*time.Second)   // users
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // bob join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	// Alice sends a message with replyTo metadata
+	if err := aliceWS.WriteJSON(Message{
+		Type:    "chat",
+		Content: "Initial draft message",
+		Data: map[string]any{
+			"replyTo": map[string]any{"id": "orig1", "sender": "bob", "content": "Hello"},
+		},
+	}); err != nil {
+		t.Fatalf("write chat failed: %v", err)
+	}
+	aliceEcho := readNextMessage(t, aliceWS, 2*time.Second)
+	_ = readNextMessage(t, bobWS, 2*time.Second)
+	msgID := aliceEcho.ID
+	if msgID == "" {
+		t.Fatalf("expected generated message ID")
+	}
+
+	// 1. Edit permissions: Bob cannot edit Alice's message -> 403
+	w := doJSONRequest(handler, "PUT", "/api/messages", map[string]string{
+		"id":      msgID,
+		"room":    "random",
+		"content": "Hacked edit",
+	}, bobToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-author edit, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// Empty content -> 400
+	w = doJSONRequest(handler, "PUT", "/api/messages", map[string]string{
+		"id":      msgID,
+		"room":    "random",
+		"content": "   ",
+	}, aliceToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty edit content, got %d", w.Code)
+	}
+
+	// Alice edits her own message -> 200 + edited=true + preserves replyTo + message_update broadcast
+	w = doJSONRequest(handler, "PUT", "/api/messages", map[string]string{
+		"id":      msgID,
+		"room":    "random",
+		"content": "Updated polished message",
+	}, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for author edit, got %d (%s)", w.Code, w.Body.String())
+	}
+	var editRes struct {
+		Message Message `json:"message"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &editRes)
+	editData, ok := editRes.Message.Data.(map[string]any)
+	if !ok || editData["edited"] != true || editData["replyTo"] == nil {
+		t.Fatalf("expected edited=true and preserved replyTo, got %+v", editRes.Message.Data)
+	}
+
+	aliceUpdate := readNextMessage(t, aliceWS, 2*time.Second)
+	bobUpdate := readNextMessage(t, bobWS, 2*time.Second)
+	if aliceUpdate.Type != "message_update" || bobUpdate.Type != "message_update" || bobUpdate.Content != "Updated polished message" {
+		t.Fatalf("expected message_update broadcast, got alice=%+v bob=%+v", aliceUpdate, bobUpdate)
+	}
+
+	// 2. Reactions: toggle add & remove + broadcast
+	w = doJSONRequest(handler, "POST", "/api/messages/react", map[string]string{
+		"id":    msgID,
+		"room":  "random",
+		"emoji": "👍",
+	}, bobToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for react add, got %d (%s)", w.Code, w.Body.String())
+	}
+	_ = readNextMessage(t, aliceWS, 2*time.Second)
+	reactAddMsg := readNextMessage(t, bobWS, 2*time.Second)
+	if reactAddMsg.Type != "message_update" {
+		t.Fatalf("expected message_update on react add, got %+v", reactAddMsg)
+	}
+	rm, _ := reactAddMsg.Data.(map[string]any)["reactions"].(map[string]any)
+	if rm == nil || len(rm["👍"].([]any)) != 1 {
+		t.Fatalf("expected 1 👍 reaction, got %+v", reactAddMsg.Data)
+	}
+
+	// Toggle same emoji off by Bob -> pruned cleanly
+	w = doJSONRequest(handler, "POST", "/api/messages/react", map[string]string{
+		"id":    msgID,
+		"room":  "random",
+		"emoji": "👍",
+	}, bobToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for react remove, got %d", w.Code)
+	}
+	_ = readNextMessage(t, aliceWS, 2*time.Second)
+	reactRemMsg := readNextMessage(t, bobWS, 2*time.Second)
+	if dataMap, ok := reactRemMsg.Data.(map[string]any); ok {
+		if _, hasReactions := dataMap["reactions"]; hasReactions {
+			t.Fatalf("expected empty reactions map to be pruned, got %+v", dataMap["reactions"])
+		}
+	}
+
+	// Oversized emoji -> 400
+	w = doJSONRequest(handler, "POST", "/api/messages/react", map[string]string{
+		"id":    msgID,
+		"room":  "random",
+		"emoji": strings.Repeat("👍", 20),
+	}, bobToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized emoji, got %d", w.Code)
+	}
+
+	// 3. SearchMessages (case-insensitive + DM 403 protection)
+	w = doJSONRequest(handler, "GET", "/api/messages/search?room=random&q=POLISHED", nil, bobToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for message search, got %d", w.Code)
+	}
+	var searchRes struct {
+		Messages []Message `json:"messages"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &searchRes)
+	if len(searchRes.Messages) != 1 || searchRes.Messages[0].ID != msgID {
+		t.Fatalf("expected 1 search match for 'POLISHED', got %+v", searchRes.Messages)
+	}
+
+	// Unauthorized DM search -> 403
+	w = doJSONRequest(handler, "GET", "/api/messages/search?room=dm:alice:bob&q=secret", nil, charlieToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for charlie searching dm:alice:bob, got %d", w.Code)
+	}
+
+	// 4. Delete permissions: Bob cannot delete Alice's message -> 403
+	w = doJSONRequest(handler, "DELETE", "/api/messages?id="+msgID+"&room=random", nil, bobToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-author delete, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// Alice deletes her own message -> 200 + message_delete broadcast + removed from history
+	w = doJSONRequest(handler, "DELETE", "/api/messages?id="+msgID+"&room=random", nil, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for author delete, got %d (%s)", w.Code, w.Body.String())
+	}
+	aliceDel := readNextMessage(t, aliceWS, 2*time.Second)
+	bobDel := readNextMessage(t, bobWS, 2*time.Second)
+	if aliceDel.Type != "message_delete" || bobDel.Type != "message_delete" || bobDel.ID != msgID {
+		t.Fatalf("expected message_delete broadcast, got alice=%+v bob=%+v", aliceDel, bobDel)
+	}
+
+	w = doJSONRequest(handler, "GET", "/api/messages?room=random", nil, aliceToken)
+	_ = json.Unmarshal(w.Body.Bytes(), &searchRes)
+	if len(searchRes.Messages) != 0 {
+		t.Fatalf("expected 0 messages in room after delete, got %d", len(searchRes.Messages))
+	}
+
+	// Deleting again -> 404
+	w = doJSONRequest(handler, "DELETE", "/api/messages?id="+msgID+"&room=random", nil, aliceToken)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for deleting already-deleted message, got %d", w.Code)
+	}
+}

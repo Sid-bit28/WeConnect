@@ -15,6 +15,11 @@ import {
   Download,
   X,
   Upload,
+  Reply,
+  Pencil,
+  Trash2,
+  Search,
+  CornerUpLeft,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
@@ -24,6 +29,7 @@ import type {
   Attachment,
   StickerData,
   GifData,
+  ReplyToData,
 } from '../types';
 import { getApiBaseUrl } from '../utils/api';
 import { MarkdownContent } from '../utils/markdown';
@@ -32,6 +38,7 @@ import { ImageLightbox } from './ImageLightbox';
 import { ExpressionPicker } from './ExpressionPicker';
 
 interface ChatAreaProps {
+  roomId: string;
   channelName: string;
   channelType?: 'text' | 'voice';
   channelTopic?: string;
@@ -59,6 +66,7 @@ const GROUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const TYPING_THROTTLE_MS = 1500;
 const TYPING_IDLE_MS = 2500;
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10MB
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '🔥', '👀'];
 
 function formatFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
@@ -84,7 +92,22 @@ function resolveMediaUrl(url: string): string {
   return `${getApiBaseUrl()}${url}`;
 }
 
+function getReplyPreview(msg: Message): string {
+  const trimmed = (msg.content || '').trim();
+  if (trimmed) {
+    return trimmed.length > 80 ? `${trimmed.slice(0, 80)}...` : trimmed;
+  }
+  const data = (msg.data || {}) as MessageData;
+  if (data.attachment) {
+    return data.attachment.isImage ? 'Image attachment' : `File: ${data.attachment.name}`;
+  }
+  if (data.sticker) return `Sticker: ${data.sticker.label}`;
+  if (data.gif) return `GIF: ${data.gif.title || 'Animation'}`;
+  return 'Message';
+}
+
 export const ChatArea: React.FC<ChatAreaProps> = ({
+  roomId,
   channelName,
   channelType = 'text',
   channelTopic,
@@ -115,7 +138,21 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
 
+  // Reply, Edit, Highlight & Search states
+  const [replyingTo, setReplyingTo] = useState<ReplyToData | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Message[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef<number>(0);
@@ -125,11 +162,17 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages.length]);
 
-  // Clear typing timers and pending upload state on channel switch or unmount
+  // Reset per-room interactive states when switching rooms
   useEffect(() => {
     setUploadError(null);
+    setReplyingTo(null);
+    setEditingMessageId(null);
+    setEditDraft('');
+    setIsSearchOpen(false);
+    setSearchQuery('');
+    setSearchResults([]);
     return () => {
       if (typingIdleTimeoutRef.current) {
         clearTimeout(typingIdleTimeoutRef.current);
@@ -140,7 +183,70 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         onTyping(false);
       }
     };
-  }, [channelName, onTyping]);
+  }, [roomId, onTyping]);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Debounced message search
+  useEffect(() => {
+    if (!isSearchOpen) return;
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let isCancelled = false;
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const res = await fetch(
+          `${getApiBaseUrl()}/api/messages/search?room=${encodeURIComponent(roomId)}&q=${encodeURIComponent(trimmed)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            signal: controller.signal,
+          }
+        );
+        if (res.ok && !isCancelled) {
+          const data = await res.json();
+          setSearchResults(Array.isArray(data?.messages) ? data.messages : []);
+        }
+      } catch (err: any) {
+        if (err?.name !== 'AbortError' && !isCancelled) {
+          setSearchResults([]);
+        }
+      } finally {
+        if (!isCancelled) setIsSearching(false);
+      }
+    }, 250);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [isSearchOpen, searchQuery, roomId, token]);
+
+  const scrollToMessage = (msgId: string) => {
+    const el = messageRefs.current.get(msgId);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMsgId(msgId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      setHighlightedMsgId((prev) => (prev === msgId ? null : prev));
+    }, 1600);
+  };
 
   const stopTypingSignal = () => {
     if (typingIdleTimeoutRef.current) {
@@ -284,6 +390,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
+    } else if (e.key === 'Escape' && replyingTo) {
+      setReplyingTo(null);
     }
   };
 
@@ -293,12 +401,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     if (connectionStatus !== 'connected') return;
 
     stopTypingSignal();
-    const data: MessageData | undefined = pendingAttachment
-      ? { attachment: pendingAttachment }
-      : undefined;
-    onSendMessage(trimmed, data);
+    const data: MessageData = {};
+    if (pendingAttachment) data.attachment = pendingAttachment;
+    if (replyingTo) data.replyTo = replyingTo;
+
+    onSendMessage(trimmed, Object.keys(data).length > 0 ? data : undefined);
     setInputText('');
     setPendingAttachment(null);
+    setReplyingTo(null);
     setUploadError(null);
   };
 
@@ -310,13 +420,96 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const handleSelectSticker = (sticker: StickerData) => {
     if (connectionStatus !== 'connected') return;
     stopTypingSignal();
-    onSendMessage('', { sticker });
+    const data: MessageData = { sticker };
+    if (replyingTo) data.replyTo = replyingTo;
+    onSendMessage('', data);
+    setReplyingTo(null);
   };
 
   const handleSelectGif = (gif: GifData) => {
     if (connectionStatus !== 'connected') return;
     stopTypingSignal();
-    onSendMessage('', { gif });
+    const data: MessageData = { gif };
+    if (replyingTo) data.replyTo = replyingTo;
+    onSendMessage('', data);
+    setReplyingTo(null);
+  };
+
+  const handleToggleReaction = async (msgId: string, emoji: string) => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/messages/react`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: msgId, room: roomId, emoji }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setUploadError(data.error || 'Failed to update reaction.');
+      }
+    } catch {
+      setUploadError('Network error while updating reaction.');
+    }
+  };
+
+  const handleStartEdit = (msg: Message) => {
+    if (!msg.id) return;
+    setEditingMessageId(msg.id);
+    setEditDraft(msg.content || '');
+    setUploadError(null);
+  };
+
+  const handleSaveEdit = async (msgId: string) => {
+    const trimmed = editDraft.trim();
+    if (!trimmed) {
+      setUploadError('Message content cannot be empty.');
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/messages`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: msgId, room: roomId, content: trimmed }),
+      });
+      if (res.ok) {
+        setEditingMessageId(null);
+        setEditDraft('');
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setUploadError(data.error || 'Failed to edit message.');
+      }
+    } catch {
+      setUploadError('Network error while editing message.');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleDeleteMessage = async (msgId: string) => {
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/api/messages?id=${encodeURIComponent(msgId)}&room=${encodeURIComponent(roomId)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setUploadError(data.error || 'Failed to delete message.');
+      }
+    } catch {
+      setUploadError('Network error while deleting message.');
+    }
   };
 
   const formatTypingText = (users: string[]) => {
@@ -350,7 +543,69 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     return styles[Math.abs(hash) % styles.length];
   };
 
-  const renderMessageRichBody = (msg: Message) => {
+  const renderHoverActions = (msg: Message, isAuthor: boolean) => {
+    if (!msg.id || editingMessageId === msg.id) return null;
+    const msgId = msg.id;
+
+    return (
+      <div className="absolute -top-3 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-20 flex items-center space-x-0.5 bg-surface/95 backdrop-blur-md border border-white/[0.1] rounded-lg px-1 py-0.5 shadow-lg">
+        {QUICK_REACTIONS.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            onClick={() => void handleToggleReaction(msgId, emoji)}
+            className="w-6 h-6 rounded-md hover:bg-card flex items-center justify-center text-xs transition-transform active:scale-90"
+            title={`React ${emoji}`}
+          >
+            {emoji}
+          </button>
+        ))}
+
+        <div className="w-[1px] h-3.5 bg-white/[0.08] mx-0.5" />
+
+        <button
+          type="button"
+          onClick={() => {
+            setReplyingTo({
+              id: msgId,
+              sender: msg.sender,
+              content: getReplyPreview(msg),
+            });
+            inputRef.current?.focus();
+          }}
+          className="p-1 rounded-md text-text-muted hover:text-text-primary hover:bg-card transition-colors"
+          title="Reply"
+        >
+          <Reply className="w-3.5 h-3.5" />
+        </button>
+
+        {isAuthor && (
+          <>
+            {msg.content !== undefined && msg.content !== '' && (
+              <button
+                type="button"
+                onClick={() => handleStartEdit(msg)}
+                className="p-1 rounded-md text-text-muted hover:text-text-primary hover:bg-card transition-colors"
+                title="Edit"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleDeleteMessage(msgId)}
+              className="p-1 rounded-md text-text-muted hover:text-danger hover:bg-danger-muted transition-colors"
+              title="Delete"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const renderMessageRichBody = (msg: Message, showInlineEditedTag: boolean) => {
     const data = (msg.data || {}) as MessageData;
     const attachments: Attachment[] = [];
     if (data.attachment) attachments.push(data.attachment);
@@ -358,14 +613,82 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
     const stickerDef = data.sticker?.id ? getStickerById(data.sticker.id) : undefined;
     const gif = data.gif;
+    const reactions = data.reactions || {};
+    const reactionEntries = Object.entries(reactions).filter(
+      ([, userList]) => Array.isArray(userList) && userList.length > 0
+    );
+    const isEditing = Boolean(msg.id && editingMessageId === msg.id);
 
     return (
-      <div className="space-y-2 mt-0.5">
-        {/* Markdown Text */}
-        {msg.content && (
-          <div className="text-sm text-text-primary/90 break-words leading-relaxed">
-            <MarkdownContent content={msg.content} />
+      <div className="space-y-1.5 mt-0.5">
+        {/* Quoted Reply Header */}
+        {data.replyTo && (
+          <button
+            type="button"
+            onClick={() => data.replyTo?.id && scrollToMessage(data.replyTo.id)}
+            className="flex items-center space-x-1.5 text-[11px] text-text-muted hover:text-text-secondary bg-surface/60 border-l-2 border-accent/60 pl-2 pr-2.5 py-0.5 rounded-r-md max-w-full transition-colors text-left"
+          >
+            <CornerUpLeft className="w-3 h-3 text-accent flex-shrink-0" />
+            <span className="font-semibold text-text-secondary flex-shrink-0">
+              @{data.replyTo.sender}
+            </span>
+            <span className="truncate opacity-80">{data.replyTo.content}</span>
+          </button>
+        )}
+
+        {/* Inline Edit Input OR Markdown Text */}
+        {isEditing && msg.id ? (
+          <div className="space-y-1.5 max-w-xl pt-0.5">
+            <input
+              type="text"
+              value={editDraft}
+              onChange={(e) => setEditDraft(e.target.value)}
+              disabled={isSavingEdit}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleSaveEdit(msg.id!);
+                } else if (e.key === 'Escape') {
+                  setEditingMessageId(null);
+                  setEditDraft('');
+                }
+              }}
+              className="w-full bg-input text-text-primary px-3 py-1.5 rounded-lg border border-accent/60 focus:outline-none text-sm"
+            />
+            <div className="flex items-center space-x-2 text-[10px] text-text-muted">
+              <span>Press Enter to save, Esc to cancel</span>
+              <span>·</span>
+              <button
+                type="button"
+                disabled={isSavingEdit}
+                onClick={() => void handleSaveEdit(msg.id!)}
+                className="text-accent hover:underline font-medium"
+              >
+                {isSavingEdit ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                disabled={isSavingEdit}
+                onClick={() => {
+                  setEditingMessageId(null);
+                  setEditDraft('');
+                }}
+                className="text-text-secondary hover:underline"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
+        ) : (
+          msg.content && (
+            <div className="text-sm text-text-primary/90 break-words leading-relaxed">
+              <MarkdownContent content={msg.content} />
+              {showInlineEditedTag && data.edited && (
+                <span className="ml-1.5 text-[10px] text-text-muted select-none">(edited)</span>
+              )}
+            </div>
+          )
         )}
 
         {/* Vector Sticker */}
@@ -455,6 +778,34 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </div>
           );
         })}
+
+        {/* Reaction Pills */}
+        {reactionEntries.length > 0 && msg.id && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+            {reactionEntries.map(([emoji, reactors]) => {
+              const reactedByMe = reactors.some(
+                (u) => u.toLowerCase() === currentUsername.toLowerCase()
+              );
+              return (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => void handleToggleReaction(msg.id!, emoji)}
+                  className={clsx(
+                    'inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[11px] border transition-colors select-none',
+                    reactedByMe
+                      ? 'bg-accent-muted border-accent/45 text-indigo-200'
+                      : 'bg-surface border-white/[0.08] text-text-secondary hover:border-white/[0.16]'
+                  )}
+                  title={reactors.join(', ')}
+                >
+                  <span>{emoji}</span>
+                  <span className="font-medium text-[10px]">{reactors.length}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   };
@@ -478,9 +829,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <div className="w-12 h-12 rounded-2xl bg-accent/15 border border-accent/30 flex items-center justify-center mb-3 text-accent">
             <Upload className="w-5 h-5" />
           </div>
-          <div className="text-sm font-semibold text-text-primary">
-            Drop file to upload
-          </div>
+          <div className="text-sm font-semibold text-text-primary">Drop file to upload</div>
           <div className="text-xs text-text-muted mt-1">
             Images, PDFs, and documents up to 10MB
           </div>
@@ -511,7 +860,26 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         </div>
 
         {/* Purposeful Actions Only */}
-        <div className="flex items-center space-x-2.5 flex-shrink-0">
+        <div className="flex items-center space-x-2 flex-shrink-0">
+          {/* Search Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              setIsSearchOpen((prev) => !prev);
+              setSearchQuery('');
+              setSearchResults([]);
+            }}
+            className={clsx(
+              'p-1.5 rounded-lg border text-xs transition-all',
+              isSearchOpen
+                ? 'bg-card border-accent/40 text-accent'
+                : 'bg-transparent border-transparent text-text-muted hover:text-text-primary hover:bg-surface'
+            )}
+            title="Search messages"
+          >
+            <Search className="w-4 h-4" />
+          </button>
+
           {isInCall ? (
             <button
               type="button"
@@ -557,6 +925,80 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           )}
         </div>
       </header>
+
+      {/* Inline Search Panel */}
+      {isSearchOpen && (
+        <div className="border-b border-white/[0.07] bg-surface/90 backdrop-blur-md px-6 py-3 z-10 flex-shrink-0">
+          <div className="max-w-4xl">
+            <div className="relative flex items-center">
+              <Search className="w-3.5 h-3.5 text-text-muted absolute left-3" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setIsSearchOpen(false);
+                    setSearchQuery('');
+                    setSearchResults([]);
+                  }
+                }}
+                autoFocus
+                placeholder={`Search messages in ${isDm ? `@${channelName}` : `#${channelName}`}...`}
+                className="w-full bg-input text-text-primary pl-9 pr-9 py-1.5 rounded-lg border border-white/[0.08] focus:border-accent/60 focus:outline-none text-xs placeholder:text-text-muted"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSearchOpen(false);
+                  setSearchQuery('');
+                  setSearchResults([]);
+                }}
+                className="absolute right-2.5 p-0.5 rounded text-text-muted hover:text-text-primary"
+                title="Close search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {searchQuery.trim() && (
+              <div className="mt-2.5 max-h-48 overflow-y-auto space-y-1">
+                {isSearching ? (
+                  <div className="flex items-center space-x-2 text-xs text-text-muted py-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
+                    <span>Searching...</span>
+                  </div>
+                ) : searchResults.length === 0 ? (
+                  <div className="text-xs text-text-muted py-2">
+                    No messages matched &ldquo;{searchQuery.trim()}&rdquo;.
+                  </div>
+                ) : (
+                  searchResults.map((res, idx) => (
+                    <button
+                      key={res.id || `sr-${idx}`}
+                      type="button"
+                      onClick={() => {
+                        if (res.id) scrollToMessage(res.id);
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-lg bg-canvas/70 hover:bg-card border border-white/[0.05] transition-colors flex flex-col"
+                    >
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-semibold text-text-primary">{res.sender}</span>
+                        <span className="text-[10px] text-text-muted">
+                          {formatTimestamp(res.timestamp)}
+                        </span>
+                      </div>
+                      <div className="text-xs text-text-secondary truncate mt-0.5">
+                        {res.content}
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Connection Status Banner */}
       {connectionStatus !== 'connected' && (
@@ -670,25 +1112,43 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 prevMsg.type !== 'call-join' &&
                 prevMsg.type !== 'call-leave';
 
+              const hasReply = Boolean((msg.data as MessageData | undefined)?.replyTo);
+
               const isGrouped =
+                !hasReply &&
                 prevIsNormal &&
                 prevMsg.sender === msg.sender &&
                 msg.timestamp &&
                 prevMsg.timestamp &&
                 msg.timestamp - prevMsg.timestamp <= GROUP_WINDOW_MS;
 
-              const isSelf = msg.sender === currentUsername;
+              const isSelf = msg.sender.toLowerCase() === currentUsername.toLowerCase();
+              const isHighlighted = Boolean(msg.id && highlightedMsgId === msg.id);
+              const isEdited = Boolean((msg.data as MessageData | undefined)?.edited);
+
+              const attachRef = (el: HTMLDivElement | null) => {
+                if (!msg.id) return;
+                if (el) messageRefs.current.set(msg.id, el);
+                else messageRefs.current.delete(msg.id);
+              };
 
               if (isGrouped) {
                 return (
                   <div
                     key={msgKey}
-                    className="flex items-baseline pl-[44px] pr-3 py-0.5 -mx-2 rounded-lg hover:bg-surface/60 transition-colors group relative"
+                    ref={attachRef}
+                    className={clsx(
+                      'flex items-baseline pl-[44px] pr-3 py-0.5 -mx-2 rounded-lg transition-colors group relative',
+                      isHighlighted
+                        ? 'bg-accent/15 ring-1 ring-accent/40'
+                        : 'hover:bg-surface/60'
+                    )}
                   >
+                    {renderHoverActions(msg, isSelf)}
                     <span className="absolute left-2 top-1 text-[10px] text-text-muted opacity-0 group-hover:opacity-100 transition-opacity select-none w-8 text-right">
                       {formatTimestamp(msg.timestamp)}
                     </span>
-                    <div className="flex-1 min-w-0">{renderMessageRichBody(msg)}</div>
+                    <div className="flex-1 min-w-0">{renderMessageRichBody(msg, true)}</div>
                   </div>
                 );
               }
@@ -696,8 +1156,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               return (
                 <div
                   key={msgKey}
-                  className="flex items-start space-x-3 pt-3 pb-0.5 px-2 -mx-2 rounded-lg hover:bg-surface/60 transition-colors group"
+                  ref={attachRef}
+                  className={clsx(
+                    'flex items-start space-x-3 pt-3 pb-0.5 px-2 -mx-2 rounded-lg transition-colors group relative',
+                    isHighlighted
+                      ? 'bg-accent/15 ring-1 ring-accent/40'
+                      : 'hover:bg-surface/60'
+                  )}
                 >
+                  {renderHoverActions(msg, isSelf)}
+
                   {/* Minimal Avatar */}
                   <div
                     className={clsx(
@@ -722,9 +1190,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       <span className="text-[10px] text-text-muted select-none">
                         {formatTimestamp(msg.timestamp)}
                       </span>
+                      {isEdited && (
+                        <span className="text-[10px] text-text-muted select-none">(edited)</span>
+                      )}
                     </div>
 
-                    {renderMessageRichBody(msg)}
+                    {renderMessageRichBody(msg, false)}
                   </div>
                 </div>
               );
@@ -734,10 +1205,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Composer Area: Typing Indicator + Pending Attachment + Input Bar */}
+      {/* Composer Area: Errors + Reply Banner + Pending Attachment + Typing Indicator + Input */}
       <div className="px-6 pb-5 pt-1 flex-shrink-0">
         <div className="max-w-4xl relative">
-          {/* Upload Error Banner */}
+          {/* Error Banner */}
           {uploadError && (
             <div className="mb-2 px-3 py-2 rounded-xl bg-danger-muted border border-danger/25 text-xs text-danger flex items-center justify-between">
               <div className="flex items-center space-x-2">
@@ -749,6 +1220,28 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 onClick={() => setUploadError(null)}
                 className="p-0.5 rounded hover:bg-danger/20"
                 title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* Replying-To Banner */}
+          {replyingTo && (
+            <div className="mb-2 px-3 py-1.5 rounded-xl bg-surface border border-white/[0.08] flex items-center justify-between text-xs">
+              <div className="flex items-center space-x-2 min-w-0">
+                <Reply className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+                <span className="text-text-muted flex-shrink-0">Replying to</span>
+                <span className="font-semibold text-text-primary flex-shrink-0">
+                  @{replyingTo.sender}
+                </span>
+                <span className="text-text-muted truncate">{replyingTo.content}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplyingTo(null)}
+                className="p-1 rounded-md text-text-muted hover:text-text-primary hover:bg-card flex-shrink-0"
+                title="Cancel reply"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -778,7 +1271,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       </div>
                     )}
                     <div className="min-w-0">
-                      <div className="truncate font-medium text-[11px]">{pendingAttachment.name}</div>
+                      <div className="truncate font-medium text-[11px]">
+                        {pendingAttachment.name}
+                      </div>
                       <div className="text-[10px] text-text-muted">
                         {formatFileSize(pendingAttachment.size)}
                       </div>

@@ -464,6 +464,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
           />
         ) : (
           <ChatArea
+            roomId={activeChannelId}
             channelName={activeDisplayName}
             channelType={activeIsDm ? 'text' : activeChannel.type}
             channelTopic={activeIsDm ? undefined : activeChannel.topic}

@@ -492,6 +492,181 @@ func (p *PostgresStore) GetMessages(room string, limit int) ([]Message, error) {
 	return res, nil
 }
 
+func (p *PostgresStore) EditMessage(msgID, room, requestingUser, newContent string) (*Message, error) {
+	trimmed := strings.TrimSpace(newContent)
+	if trimmed == "" {
+		return nil, errors.New("Message content cannot be empty")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var m Message
+	var dataBytes []byte
+	err := p.pool.QueryRow(ctx,
+		`SELECT COALESCE(msg_id, ''), type, room, sender, COALESCE(content, ''), data, timestamp
+		 FROM messages
+		 WHERE msg_id = $1 AND room = $2
+		 LIMIT 1`,
+		msgID, room,
+	).Scan(&m.ID, &m.Type, &m.Room, &m.Sender, &m.Content, &dataBytes, &m.Timestamp)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMessageNotFound
+		}
+		return nil, err
+	}
+
+	if !strings.EqualFold(m.Sender, requestingUser) {
+		return nil, fmt.Errorf("%w: Only the author can edit this message", ErrMessageForbidden)
+	}
+
+	if len(dataBytes) > 0 {
+		_ = json.Unmarshal(dataBytes, &m.Data)
+	}
+	dataMap := ensureDataMap(m.Data)
+	dataMap["edited"] = true
+	m.Content = trimmed
+	m.Data = dataMap
+
+	updatedDataBytes, err := json.Marshal(dataMap)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = p.pool.Exec(ctx,
+		`UPDATE messages SET content = $1, data = $2 WHERE msg_id = $3 AND room = $4`,
+		m.Content, updatedDataBytes, msgID, room,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &m, nil
+}
+
+func (p *PostgresStore) DeleteMessage(msgID, room, requestingUser string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var sender string
+	err := p.pool.QueryRow(ctx,
+		`SELECT sender FROM messages WHERE msg_id = $1 AND room = $2 LIMIT 1`,
+		msgID, room,
+	).Scan(&sender)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+
+	if !strings.EqualFold(sender, requestingUser) {
+		return fmt.Errorf("%w: Only the author can delete this message", ErrMessageForbidden)
+	}
+
+	tag, err := p.pool.Exec(ctx,
+		`DELETE FROM messages WHERE msg_id = $1 AND room = $2`,
+		msgID, room,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrMessageNotFound
+	}
+	return nil
+}
+
+func (p *PostgresStore) ToggleReaction(msgID, room, username, emoji string) (*Message, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var m Message
+	var dataBytes []byte
+	err := p.pool.QueryRow(ctx,
+		`SELECT COALESCE(msg_id, ''), type, room, sender, COALESCE(content, ''), data, timestamp
+		 FROM messages
+		 WHERE msg_id = $1 AND room = $2
+		 LIMIT 1`,
+		msgID, room,
+	).Scan(&m.ID, &m.Type, &m.Room, &m.Sender, &m.Content, &dataBytes, &m.Timestamp)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMessageNotFound
+		}
+		return nil, err
+	}
+
+	if len(dataBytes) > 0 {
+		_ = json.Unmarshal(dataBytes, &m.Data)
+	}
+	updatedMap := toggleReactionInData(m.Data, username, emoji)
+	m.Data = updatedMap
+
+	updatedDataBytes, err := json.Marshal(updatedMap)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = p.pool.Exec(ctx,
+		`UPDATE messages SET data = $1 WHERE msg_id = $2 AND room = $3`,
+		updatedDataBytes, msgID, room,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &m, nil
+}
+
+func (p *PostgresStore) SearchMessages(room, query string, limit int) ([]Message, error) {
+	q := strings.TrimSpace(query)
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	res := make([]Message, 0)
+	if q == "" {
+		return res, nil
+	}
+
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+	pattern := "%" + escaped + "%"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT COALESCE(msg_id, ''), type, room, sender, COALESCE(content, ''), data, timestamp
+		 FROM messages
+		 WHERE room = $1 AND content ILIKE $2 ESCAPE '\'
+		 ORDER BY timestamp DESC, id DESC
+		 LIMIT $3`,
+		room, pattern, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var m Message
+		var dataBytes []byte
+		if err := rows.Scan(&m.ID, &m.Type, &m.Room, &m.Sender, &m.Content, &dataBytes, &m.Timestamp); err != nil {
+			continue
+		}
+		if len(dataBytes) > 0 {
+			_ = json.Unmarshal(dataBytes, &m.Data)
+		}
+		res = append(res, m)
+	}
+	return res, nil
+}
+
 func (p *PostgresStore) GetChannels() ([]Channel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
