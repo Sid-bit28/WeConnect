@@ -3,8 +3,11 @@ import { ChannelSidebar } from './components/ChannelSidebar';
 import { ChatArea } from './components/ChatArea';
 import { VideoGrid } from './components/VideoGrid';
 import { UserList } from './components/UserList';
+import { FriendsView } from './components/FriendsView';
+import { AuthModal } from './components/AuthModal';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
+import { useAuth } from './hooks/useAuth';
 import type { Channel, Message } from './types';
 import { Compass, Plus, Radio, User, Check, Video } from 'lucide-react';
 
@@ -17,18 +20,35 @@ const DEFAULT_CHANNELS: Channel[] = [
 ];
 
 export function App() {
-  // Username management (persisted in localStorage)
-  const [username, setUsername] = useState<string>(() => {
-    const saved = localStorage.getItem('weconnect_username');
+  // Authentication hook
+  const {
+    user,
+    token,
+    login,
+    register,
+    logout,
+    error: authError,
+    setError: setAuthError,
+  } = useAuth();
+
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
+  // Guest username fallback if not authenticated
+  const [guestUsername, setGuestUsername] = useState<string>(() => {
+    const saved = localStorage.getItem('weconnect_guest_username');
     if (saved && saved.trim()) return saved.trim();
     return `User${Math.floor(1000 + Math.random() * 9000)}`;
   });
 
   const [isEditingUsername, setIsEditingUsername] = useState(false);
-  const [tempUsername, setTempUsername] = useState(username);
+  const [tempUsername, setTempUsername] = useState(guestUsername);
+
+  // Current active username (authenticated username takes priority)
+  const activeUsername = user?.username || guestUsername;
 
   // Active channel & view mode
   const [activeChannelId, setActiveChannelId] = useState<string>('general');
+  const [isFriendsViewActive, setIsFriendsViewActive] = useState<boolean>(false);
   const [showUserList, setShowUserList] = useState<boolean>(true);
   const [isCallViewActive, setIsCallViewActive] = useState<boolean>(false);
 
@@ -38,7 +58,7 @@ export function App() {
   // WebSocket hook
   const { status, messages, users, error: socketError, send, sendSignal, connect } = useSocket(
     activeChannelId,
-    username,
+    activeUsername,
     {
       onMessage: (msg) => {
         if (handleSignalRef.current) {
@@ -51,7 +71,7 @@ export function App() {
   // WebRTC hook
   const webrtc = useWebRTC({
     room: activeChannelId,
-    username,
+    username: activeUsername,
     send,
     sendSignal,
     roomUsers: users,
@@ -69,6 +89,7 @@ export function App() {
   useEffect(() => {
     if (webrtc.isInCall) {
       setIsCallViewActive(true);
+      setIsFriendsViewActive(false);
     } else {
       setIsCallViewActive(false);
     }
@@ -80,9 +101,9 @@ export function App() {
 
   const handleSaveUsername = () => {
     const trimmed = tempUsername.trim();
-    if (trimmed && trimmed !== username) {
-      setUsername(trimmed);
-      localStorage.setItem('weconnect_username', trimmed);
+    if (trimmed && trimmed !== guestUsername) {
+      setGuestUsername(trimmed);
+      localStorage.setItem('weconnect_guest_username', trimmed);
     }
     setIsEditingUsername(false);
   };
@@ -90,11 +111,16 @@ export function App() {
   const handleChannelSelect = (channelId: string) => {
     const targetChannel = DEFAULT_CHANNELS.find((c) => c.id === channelId);
     setActiveChannelId(channelId);
+    setIsFriendsViewActive(false);
 
     // If clicking a voice channel and not yet in call, join call automatically
     if (targetChannel?.type === 'voice' && !webrtc.isInCall) {
       webrtc.joinCall();
     }
+  };
+
+  const handleSelectFriends = () => {
+    setIsFriendsViewActive(true);
   };
 
   return (
@@ -104,6 +130,7 @@ export function App() {
         {/* WeConnect App Icon */}
         <button
           type="button"
+          onClick={() => setIsFriendsViewActive(false)}
           className="w-12 h-12 rounded-[24px] hover:rounded-[16px] bg-discord-blurple flex items-center justify-center text-white transition-all duration-200 group relative shadow-md"
           title="WeConnect Home"
         >
@@ -116,6 +143,7 @@ export function App() {
         {/* Server 1 Icon */}
         <button
           type="button"
+          onClick={() => setIsFriendsViewActive(false)}
           className="w-12 h-12 rounded-[24px] hover:rounded-[16px] bg-discord-darker hover:bg-discord-blurple flex items-center justify-center text-discord-text hover:text-white transition-all duration-200 group font-bold text-sm"
           title="Main Hub"
         >
@@ -141,36 +169,46 @@ export function App() {
 
         <div className="flex-1" />
 
-        {/* Change Username Button */}
+        {/* Change Username / Profile Button */}
         <button
           type="button"
           onClick={() => {
-            setTempUsername(username);
-            setIsEditingUsername(true);
+            if (user) {
+              // If authenticated, allow logging out or changing settings
+              setIsAuthModalOpen(true);
+            } else {
+              setTempUsername(guestUsername);
+              setIsEditingUsername(true);
+            }
           }}
           className="w-12 h-12 rounded-[24px] hover:rounded-[16px] bg-discord-darker hover:bg-discord-hover flex items-center justify-center text-discord-muted hover:text-white transition-all"
-          title="Change Username"
+          title={user ? `Logged in as ${user.username}` : 'Change Username or Log In'}
         >
           <User className="w-5 h-5" />
         </button>
       </div>
 
-      {/* 2. Channel Sidebar */}
+      {/* 2. Channel & Friends Sidebar */}
       <ChannelSidebar
         channels={DEFAULT_CHANNELS}
         activeChannel={activeChannelId}
         onSelectChannel={handleChannelSelect}
-        username={username}
+        username={activeUsername}
         serverName="WeConnect"
         connectionStatus={status}
         isInCall={webrtc.isInCall}
         activeVoiceChannelName={activeChannel.name}
         onLeaveCall={webrtc.leaveCall}
+        isFriendsActive={isFriendsViewActive}
+        onSelectFriends={handleSelectFriends}
+        isAuthenticated={!!user}
+        onLogout={logout}
+        onOpenAuth={() => setIsAuthModalOpen(true)}
       />
 
-      {/* 3. Center Area: Either VideoGrid or ChatArea (or Pip toggle) */}
+      {/* 3. Center Area: FriendsView, VideoGrid, or ChatArea */}
       <div className="flex-1 flex flex-col h-full min-w-0 relative">
-        {/* If in call and currently viewing chat, show Top In-Call Pip Banner */}
+        {/* If in call and not viewing video grid, show Top In-Call Banner */}
         {webrtc.isInCall && !isCallViewActive && (
           <div className="bg-discord-online/20 border-b border-discord-online/30 px-4 py-2 flex items-center justify-between text-xs font-semibold text-discord-online z-20">
             <div className="flex items-center space-x-2">
@@ -179,7 +217,10 @@ export function App() {
             </div>
             <button
               type="button"
-              onClick={() => setIsCallViewActive(true)}
+              onClick={() => {
+                setIsFriendsViewActive(false);
+                setIsCallViewActive(true);
+              }}
               className="bg-discord-online text-white px-3 py-1 rounded hover:bg-discord-online/90 flex items-center space-x-1.5 transition-colors"
             >
               <Video className="w-3.5 h-3.5" />
@@ -188,11 +229,21 @@ export function App() {
           </div>
         )}
 
-        {isCallViewActive ? (
+        {isFriendsViewActive ? (
+          <FriendsView
+            token={token}
+            currentUsername={activeUsername}
+            onOpenChat={(channelId) => {
+              setActiveChannelId(channelId);
+              setIsFriendsViewActive(false);
+            }}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
+          />
+        ) : isCallViewActive ? (
           <VideoGrid
             localStream={webrtc.localStream}
             peers={webrtc.peers}
-            currentUsername={username}
+            currentUsername={activeUsername}
             isAudioMuted={webrtc.isAudioMuted}
             isVideoOff={webrtc.isVideoOff}
             isScreenSharing={webrtc.isScreenSharing}
@@ -208,7 +259,7 @@ export function App() {
             channelType={activeChannel.type}
             channelTopic={activeChannel.topic}
             messages={messages}
-            currentUsername={username}
+            currentUsername={activeUsername}
             connectionStatus={status}
             errorMessage={socketError}
             isInCall={webrtc.isInCall}
@@ -223,21 +274,21 @@ export function App() {
         )}
       </div>
 
-      {/* 4. Right User List */}
-      {showUserList && (
+      {/* 4. Right User List (Shown during Chat) */}
+      {!isFriendsViewActive && showUserList && (
         <UserList
-          users={users.length > 0 ? users : [username]}
-          currentUsername={username}
+          users={users.length > 0 ? users : [activeUsername]}
+          currentUsername={activeUsername}
         />
       )}
 
-      {/* Username Change Modal */}
+      {/* Guest Username Change Modal */}
       {isEditingUsername && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-discord-darker border border-discord-darkest rounded-lg max-w-sm w-full p-5 shadow-2xl">
             <h3 className="text-lg font-bold text-discord-heading mb-1">Change Display Name</h3>
             <p className="text-xs text-discord-muted mb-4">
-              Enter your desired username for chat and presence.
+              Enter your temporary display name or log in to a permanent account.
             </p>
 
             <div className="mb-4">
@@ -258,27 +309,50 @@ export function App() {
               />
             </div>
 
-            <div className="flex justify-end space-x-2">
+            <div className="flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => setIsEditingUsername(false)}
-                className="px-4 py-1.5 text-xs font-semibold text-discord-text hover:underline"
+                onClick={() => {
+                  setIsEditingUsername(false);
+                  setIsAuthModalOpen(true);
+                }}
+                className="text-xs text-discord-blurple hover:underline font-medium"
               >
-                Cancel
+                Log In / Register
               </button>
-              <button
-                type="button"
-                onClick={handleSaveUsername}
-                disabled={!tempUsername.trim()}
-                className="bg-discord-blurple hover:bg-discord-blurple-hover disabled:opacity-50 text-white px-4 py-1.5 rounded text-xs font-semibold transition-colors flex items-center space-x-1"
-              >
-                <Check className="w-3.5 h-3.5" />
-                <span>Save</span>
-              </button>
+
+              <div className="flex space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingUsername(false)}
+                  className="px-3 py-1.5 text-xs font-semibold text-discord-text hover:underline"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveUsername}
+                  disabled={!tempUsername.trim()}
+                  className="bg-discord-blurple hover:bg-discord-blurple-hover disabled:opacity-50 text-white px-4 py-1.5 rounded text-xs font-semibold transition-colors flex items-center space-x-1"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Save</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* Auth Modal (Login / Register) */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onLogin={login}
+        onRegister={register}
+        error={authError}
+        onClearError={() => setAuthError(null)}
+      />
     </div>
   );
 }

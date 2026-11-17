@@ -12,11 +12,11 @@ import (
 
 // Message defines the WebSocket JSON protocol payload.
 type Message struct {
-	Type      string `json:"type"` // "chat" | "join" | "leave" | "users" | "signal" | "error"
-	Room      string `json:"room"`
+	Type      string `json:"type"` // "chat" | "join" | "leave" | "users" | "signal" | "error" | "friend_update"
+	Room      string `json:"room,omitempty"`
 	Sender    string `json:"sender"`
 	Content   string `json:"content,omitempty"`
-	Data      any    `json:"data,omitempty"`      // WebRTC signaling payload or user list
+	Data      any    `json:"data,omitempty"`      // WebRTC signaling payload, user list, or friend update details
 	Timestamp int64  `json:"timestamp,omitempty"` // Milliseconds Unix timestamp
 }
 
@@ -190,6 +190,7 @@ func (h *Hub) SendToClient(roomName, targetUser string, msg Message) bool {
 		return false
 	}
 
+	targetNorm := strings.ToLower(strings.TrimSpace(targetUser))
 	h.mu.RLock()
 	room, exists := h.rooms[roomName]
 	if !exists {
@@ -199,7 +200,7 @@ func (h *Hub) SendToClient(roomName, targetUser string, msg Message) bool {
 
 	targets := make([]*Client, 0)
 	for c := range room.Clients {
-		if c.username == targetUser {
+		if strings.ToLower(c.username) == targetNorm {
 			targets = append(targets, c)
 		}
 	}
@@ -212,6 +213,58 @@ func (h *Hub) SendToClient(roomName, targetUser string, msg Message) bool {
 	sent := false
 	for _, c := range targets {
 		if c.Send(data) {
+			sent = true
+		}
+	}
+	return sent
+}
+
+// IsUserOnline returns true if any connected client has the specified username.
+func (h *Hub) IsUserOnline(username string) bool {
+	norm := strings.ToLower(strings.TrimSpace(username))
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, room := range h.rooms {
+		for client := range room.Clients {
+			if strings.ToLower(client.username) == norm {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// NotifyUser sends a protocol message to all active connections belonging to a specific user across all rooms.
+func (h *Hub) NotifyUser(username string, msg Message) bool {
+	if username == "" {
+		return false
+	}
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().UnixMilli()
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[Hub] Failed to marshal notification: %v", err)
+		return false
+	}
+
+	norm := strings.ToLower(strings.TrimSpace(username))
+	h.mu.RLock()
+	var targets []*Client
+	for _, room := range h.rooms {
+		for client := range room.Clients {
+			if strings.ToLower(client.username) == norm {
+				targets = append(targets, client)
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	sent := false
+	for _, client := range targets {
+		if client.Send(data) {
 			sent = true
 		}
 	}

@@ -9,6 +9,9 @@ import {
   Plus,
   PhoneOff,
   Signal,
+  Users,
+  LogOut,
+  LogIn,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Channel } from '../types';
@@ -23,6 +26,11 @@ interface ChannelSidebarProps {
   isInCall?: boolean;
   activeVoiceChannelName?: string;
   onLeaveCall?: () => void;
+  isFriendsActive?: boolean;
+  onSelectFriends?: () => void;
+  isAuthenticated?: boolean;
+  onLogout?: () => void;
+  onOpenAuth?: () => void;
 }
 
 export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
@@ -35,6 +43,11 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
   isInCall = false,
   activeVoiceChannelName = 'Voice Lounge',
   onLeaveCall,
+  isFriendsActive = false,
+  onSelectFriends,
+  isAuthenticated = false,
+  onLogout,
+  onOpenAuth,
 }) => {
   const textChannels = channels.filter((c) => c.type !== 'voice');
   const voiceChannels = channels.filter((c) => c.type === 'voice');
@@ -57,8 +70,36 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
         <ChevronDown className="w-4 h-4 text-discord-muted" />
       </div>
 
-      {/* Channels List */}
+      {/* Channels & Friends Navigation List */}
       <div className="flex-1 overflow-y-auto px-2 py-3 space-y-4">
+        {/* Top Direct Messages / Friends Button */}
+        {onSelectFriends && (
+          <div>
+            <button
+              type="button"
+              onClick={onSelectFriends}
+              className={clsx(
+                'w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-all group relative text-left',
+                isFriendsActive
+                  ? 'bg-discord-active text-discord-heading shadow-sm'
+                  : 'text-discord-muted hover:bg-discord-hover hover:text-discord-text'
+              )}
+            >
+              {isFriendsActive && (
+                <span className="absolute -left-2 w-1 h-5 bg-white rounded-r-full" />
+              )}
+              <Users
+                className={clsx('w-4 h-4 mr-2.5 flex-shrink-0', {
+                  'text-discord-heading': isFriendsActive,
+                  'text-discord-muted group-hover:text-discord-text': !isFriendsActive,
+                })}
+              />
+              <span className="truncate flex-1 font-semibold">Friends</span>
+            </button>
+            <div className="h-[1px] bg-white/5 my-2 mx-1" />
+          </div>
+        )}
+
         {/* Text Channels Section */}
         <div>
           <div className="flex items-center justify-between px-2 mb-1 text-[11px] font-bold tracking-wider text-discord-muted uppercase">
@@ -74,7 +115,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
 
           <div className="space-y-0.5">
             {textChannels.map((channel) => {
-              const isActive = activeChannel === channel.id;
+              const isActive = !isFriendsActive && activeChannel === channel.id;
               return (
                 <button
                   key={channel.id}
@@ -116,7 +157,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
           </div>
           <div className="space-y-0.5">
             {voiceChannels.map((channel) => {
-              const isActive = activeChannel === channel.id;
+              const isActive = !isFriendsActive && activeChannel === channel.id;
               return (
                 <button
                   key={channel.id}
@@ -200,7 +241,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
           <div className="truncate text-left leading-tight">
             <div className="text-sm font-semibold text-discord-heading truncate">{username}</div>
             <div className="text-[11px] text-discord-muted truncate capitalize">
-              {connectionStatus === 'connected' ? 'Online' : connectionStatus}
+              {isAuthenticated ? 'Authenticated' : 'Guest'}
             </div>
           </div>
         </div>
@@ -227,6 +268,29 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
           >
             <Settings className="w-4 h-4" />
           </button>
+
+          {/* Logout or Login Button */}
+          {isAuthenticated ? (
+            <button
+              type="button"
+              onClick={onLogout}
+              className="p-1.5 hover:bg-discord-danger/20 hover:text-discord-danger rounded transition-colors"
+              title="Log Out"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          ) : (
+            onOpenAuth && (
+              <button
+                type="button"
+                onClick={onOpenAuth}
+                className="p-1.5 hover:bg-discord-blurple/20 hover:text-discord-blurple rounded transition-colors"
+                title="Log In / Register"
+              >
+                <LogIn className="w-4 h-4" />
+              </button>
+            )
+          )}
         </div>
       </div>
     </div>

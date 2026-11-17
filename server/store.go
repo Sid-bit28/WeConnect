@@ -1,0 +1,416 @@
+package main
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+// User represents a registered user account.
+type User struct {
+	ID           string    `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"passwordHash"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// Friendship represents a directional or bidirectional relationship between two users.
+type Friendship struct {
+	ID        string    `json:"id"`
+	Requester string    `json:"requester"` // username who sent the request
+	Receiver  string    `json:"receiver"`  // username who received the request
+	Status    string    `json:"status"`    // "pending" | "accepted"
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// StoreData represents the persisted JSON structure.
+type StoreData struct {
+	Users       map[string]*User       `json:"users"`       // normalized username -> User
+	Friendships map[string]*Friendship `json:"friendships"` // canonical key -> Friendship
+	Tokens      map[string]string      `json:"tokens"`      // token -> normalized username
+}
+
+// Store handles thread-safe data persistence for users, sessions, and friendships.
+type Store struct {
+	mu       sync.RWMutex
+	filePath string
+	data     StoreData
+}
+
+// NewStore creates or loads a store from the given file path. If filePath is empty, runs purely in-memory.
+func NewStore(filePath string) (*Store, error) {
+	s := &Store{
+		filePath: filePath,
+		data: StoreData{
+			Users:       make(map[string]*User),
+			Friendships: make(map[string]*Friendship),
+			Tokens:      make(map[string]string),
+		},
+	}
+
+	if filePath != "" {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+			return nil, fmt.Errorf("failed to create data directory: %w", err)
+		}
+
+		if _, err := os.Stat(filePath); err == nil {
+			bytes, err := os.ReadFile(filePath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read store file: %w", err)
+			}
+			if len(bytes) > 0 {
+				if err := json.Unmarshal(bytes, &s.data); err != nil {
+					return nil, fmt.Errorf("failed to parse store file: %w", err)
+				}
+			}
+		}
+		// Ensure non-nil maps
+		if s.data.Users == nil {
+			s.data.Users = make(map[string]*User)
+		}
+		if s.data.Friendships == nil {
+			s.data.Friendships = make(map[string]*Friendship)
+		}
+		if s.data.Tokens == nil {
+			s.data.Tokens = make(map[string]string)
+		}
+	}
+
+	return s, nil
+}
+
+func (s *Store) saveLocked() error {
+	if s.filePath == "" {
+		return nil
+	}
+	bytes, err := json.MarshalIndent(s.data, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmpFile := s.filePath + ".tmp"
+	if err := os.WriteFile(tmpFile, bytes, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, s.filePath)
+}
+
+func normalizeUsername(u string) string {
+	return strings.ToLower(strings.TrimSpace(u))
+}
+
+func friendshipKey(u1, u2 string) string {
+	u1 = normalizeUsername(u1)
+	u2 = normalizeUsername(u2)
+	if u1 < u2 {
+		return u1 + ":" + u2
+	}
+	return u2 + ":" + u1
+}
+
+func hashPassword(password string) (string, error) {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	saltHex := hex.EncodeToString(salt)
+	hash := sha256.Sum256([]byte(saltHex + ":" + password))
+	return saltHex + "$" + hex.EncodeToString(hash[:]), nil
+}
+
+func checkPassword(storedHash, password string) bool {
+	parts := strings.Split(storedHash, "$")
+	if len(parts) != 2 {
+		return false
+	}
+	saltHex := parts[0]
+	expectedHashHex := parts[1]
+
+	expectedHash, err := hex.DecodeString(expectedHashHex)
+	if err != nil {
+		return false
+	}
+
+	actualHash := sha256.Sum256([]byte(saltHex + ":" + password))
+	return subtle.ConstantTimeCompare(actualHash[:], expectedHash) == 1
+}
+
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// Register creates a new user account with a hashed password and returns an auth session token.
+func (s *Store) Register(username, password string) (*User, string, error) {
+	normUser := normalizeUsername(username)
+	if len(normUser) < 3 {
+		return nil, "", errors.New("Username must be at least 3 characters")
+	}
+	if len(password) < 6 {
+		return nil, "", errors.New("Password must be at least 6 characters")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.data.Users[normUser]; exists {
+		return nil, "", errors.New("Username is already taken")
+	}
+
+	pwHash, err := hashPassword(password)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	user := &User{
+		ID:           normUser,
+		Username:     normUser,
+		PasswordHash: pwHash,
+		CreatedAt:    time.Now().UTC(),
+	}
+	s.data.Users[normUser] = user
+
+	token, err := generateToken()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate auth token: %w", err)
+	}
+	s.data.Tokens[token] = normUser
+
+	if err := s.saveLocked(); err != nil {
+		return nil, "", fmt.Errorf("failed to persist user: %w", err)
+	}
+
+	return user, token, nil
+}
+
+// Login verifies user credentials and returns a new session token.
+func (s *Store) Login(username, password string) (*User, string, error) {
+	normUser := normalizeUsername(username)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, exists := s.data.Users[normUser]
+	if !exists || !checkPassword(user.PasswordHash, password) {
+		return nil, "", errors.New("Invalid username or password")
+	}
+
+	token, err := generateToken()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate token: %w", err)
+	}
+	s.data.Tokens[token] = normUser
+
+	if err := s.saveLocked(); err != nil {
+		return nil, "", fmt.Errorf("failed to persist token: %w", err)
+	}
+
+	return user, token, nil
+}
+
+// AuthenticateToken resolves a bearer token to a User.
+func (s *Store) AuthenticateToken(token string) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	username, exists := s.data.Tokens[token]
+	if !exists {
+		return nil, errors.New("Invalid or expired session token")
+	}
+
+	user, exists := s.data.Users[username]
+	if !exists {
+		return nil, errors.New("User not found")
+	}
+
+	return user, nil
+}
+
+// UserExists checks if a username is registered.
+func (s *Store) UserExists(username string) bool {
+	normUser := normalizeUsername(username)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, exists := s.data.Users[normUser]
+	return exists
+}
+
+// SendFriendRequest creates a pending friend request from requester to receiver.
+func (s *Store) SendFriendRequest(requester, receiver string) error {
+	normReq := normalizeUsername(requester)
+	normRec := normalizeUsername(receiver)
+
+	if normReq == normRec {
+		return errors.New("Cannot send friend request to yourself")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.data.Users[normRec]; !exists {
+		return errors.New("Target user does not exist")
+	}
+
+	key := friendshipKey(normReq, normRec)
+	if existing, exists := s.data.Friendships[key]; exists {
+		if existing.Status == "accepted" {
+			return errors.New("Already friends with this user")
+		}
+		if existing.Requester == normReq {
+			return errors.New("Friend request already sent")
+		}
+		// If the receiver had previously sent a request, auto-accept
+		existing.Status = "accepted"
+		return s.saveLocked()
+	}
+
+	f := &Friendship{
+		ID:        key,
+		Requester: normReq,
+		Receiver:  normRec,
+		Status:    "pending",
+		CreatedAt: time.Now().UTC(),
+	}
+	s.data.Friendships[key] = f
+	return s.saveLocked()
+}
+
+// AcceptFriendRequest accepts an incoming pending friend request.
+func (s *Store) AcceptFriendRequest(receiver, requester string) error {
+	normRec := normalizeUsername(receiver)
+	normReq := normalizeUsername(requester)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := friendshipKey(normRec, normReq)
+	f, exists := s.data.Friendships[key]
+	if !exists || f.Status != "pending" || f.Receiver != normRec || f.Requester != normReq {
+		return errors.New("No pending friend request found from this user")
+	}
+
+	f.Status = "accepted"
+	return s.saveLocked()
+}
+
+// RejectFriendRequest declines or cancels a pending friend request.
+func (s *Store) RejectFriendRequest(currentUser, otherUser string) error {
+	normCur := normalizeUsername(currentUser)
+	normOth := normalizeUsername(otherUser)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := friendshipKey(normCur, normOth)
+	f, exists := s.data.Friendships[key]
+	if !exists || f.Status != "pending" {
+		return errors.New("Pending friend request not found")
+	}
+
+	if f.Requester != normCur && f.Receiver != normCur {
+		return errors.New("Unauthorized to reject this request")
+	}
+
+	delete(s.data.Friendships, key)
+	return s.saveLocked()
+}
+
+// RemoveFriend deletes an accepted friendship between two users.
+func (s *Store) RemoveFriend(currentUser, friendUser string) error {
+	normCur := normalizeUsername(currentUser)
+	normFri := normalizeUsername(friendUser)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := friendshipKey(normCur, normFri)
+	f, exists := s.data.Friendships[key]
+	if !exists || f.Status != "accepted" {
+		return errors.New("Friendship not found")
+	}
+
+	if f.Requester != normCur && f.Receiver != normCur {
+		return errors.New("Unauthorized to remove this friendship")
+	}
+
+	delete(s.data.Friendships, key)
+	return s.saveLocked()
+}
+
+// FriendEntry represents a friend in the friends list response.
+type FriendEntry struct {
+	Username string `json:"username"`
+	Online   bool   `json:"online"`
+}
+
+// RequestEntry represents an incoming or outgoing pending request.
+type RequestEntry struct {
+	Username  string    `json:"username"`
+	From      string    `json:"from,omitempty"`
+	To        string    `json:"to,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// FriendsData contains all friend lists for a user.
+type FriendsData struct {
+	Friends  []FriendEntry  `json:"friends"`
+	Incoming []RequestEntry `json:"incoming"`
+	Outgoing []RequestEntry `json:"outgoing"`
+}
+
+// GetFriends returns accepted friends, incoming pending requests, and outgoing pending requests.
+func (s *Store) GetFriends(username string, isOnline func(string) bool) FriendsData {
+	normUser := normalizeUsername(username)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	res := FriendsData{
+		Friends:  make([]FriendEntry, 0),
+		Incoming: make([]RequestEntry, 0),
+		Outgoing: make([]RequestEntry, 0),
+	}
+
+	for _, f := range s.data.Friendships {
+		if f.Status == "accepted" {
+			if f.Requester == normUser {
+				res.Friends = append(res.Friends, FriendEntry{
+					Username: f.Receiver,
+					Online:   isOnline(f.Receiver),
+				})
+			} else if f.Receiver == normUser {
+				res.Friends = append(res.Friends, FriendEntry{
+					Username: f.Requester,
+					Online:   isOnline(f.Requester),
+				})
+			}
+		} else if f.Status == "pending" {
+			if f.Receiver == normUser {
+				res.Incoming = append(res.Incoming, RequestEntry{
+					Username:  f.Requester,
+					From:      f.Requester,
+					CreatedAt: f.CreatedAt,
+				})
+			} else if f.Requester == normUser {
+				res.Outgoing = append(res.Outgoing, RequestEntry{
+					Username:  f.Receiver,
+					To:        f.Receiver,
+					CreatedAt: f.CreatedAt,
+				})
+			}
+		}
+	}
+
+	return res
+}

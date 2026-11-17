@@ -70,7 +70,25 @@ Messages are exchanged over `ws://localhost:8080/ws?room=<room_name>&user=<usern
 | `users` | Server → Room | Broadcast containing `data: string[]` of active usernames. |
 | `chat` | Client ↔ Room | Broadcast text messages with sender and timestamp. |
 | `signal` | Client ↔ Target Client | 1-to-1 WebRTC signaling (`data: { target, signalType, payload }`). |
+| `friend_update` | Server → Client | Real-time notification for friend requests, acceptances, and removals. |
 | `error` | Server → Client | Unicast error message for invalid formats or unknown targets. |
+
+---
+
+## REST API Endpoints
+
+### Authentication
+- `POST /api/auth/register`: `{ username, password }` -> `201 Created` with `{ token, user: { username } }`
+- `POST /api/auth/login`: `{ username, password }` -> `200 OK` with `{ token, user: { username } }` (or `401 Unauthorized`)
+- `GET /api/auth/me`: `Authorization: Bearer <token>` -> `200 OK` with `{ user: { username } }`
+
+### Friends Management
+*All friends endpoints require `Authorization: Bearer <token>`.*
+- `GET /api/friends`: Returns `{ friends: [{ username, online }], incoming: [...], outgoing: [...] }`
+- `POST /api/friends/request`: `{ targetUsername }` -> sends a pending friend request
+- `POST /api/friends/accept`: `{ fromUsername }` -> accepts an incoming friend request
+- `POST /api/friends/reject`: `{ fromUsername }` -> declines/cancels a friend request
+- `POST /api/friends/remove`: `{ friendUsername }` -> removes an accepted friendship
 
 ---
 

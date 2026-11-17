@@ -35,7 +35,7 @@ echo "--> Starting Go WebSocket Server on port 8080..."
 cd "$ROOT_DIR/server"
 if [ ! -f "server" ]; then
     echo "Building Go server binary..."
-    go build -o server .
+    go build -buildvcs=false -o server .
 fi
 
 ./server &

@@ -4,6 +4,10 @@ server/*.exe
 server/*.test
 *.out
 
+# Data store
+server/data/*.json
+server/data/*.tmp
+
 # Node dependencies and build
 client/node_modules/
 client/dist/

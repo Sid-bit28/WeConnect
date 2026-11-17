@@ -1,4 +1,13 @@
-export type MessageType = "chat" | "join" | "leave" | "users" | "signal" | "error" | "call-join" | "call-leave";
+export type MessageType =
+  | "chat"
+  | "join"
+  | "leave"
+  | "users"
+  | "signal"
+  | "error"
+  | "call-join"
+  | "call-leave"
+  | "friend_update";
 
 export interface Message {
   type: MessageType;
@@ -30,4 +39,24 @@ export interface PeerStream {
   stream: MediaStream;
   isAudioMuted?: boolean;
   isVideoOff?: boolean;
+}
+
+export interface AuthUser {
+  username: string;
+}
+
+export interface Friend {
+  username: string;
+  isOnline?: boolean;
+}
+
+export interface FriendRequest {
+  username: string;
+  createdAt?: number;
+}
+
+export interface FriendsData {
+  friends: Friend[];
+  incoming: FriendRequest[];
+  outgoing: FriendRequest[];
 }
