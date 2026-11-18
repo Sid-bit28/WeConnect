@@ -8,6 +8,7 @@ import { AuthScreen } from './components/AuthScreen';
 import { CreateChannelModal } from './components/CreateChannelModal';
 import { NotificationToast, type NotificationItem } from './components/NotificationToast';
 import { IncomingCallBanner, type IncomingCall } from './components/IncomingCallBanner';
+import { FloatingCallPiP } from './components/FloatingCallPiP';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
@@ -42,7 +43,10 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const [channels, setChannels] = useState<Channel[]>(DEFAULT_CHANNELS);
   const [activeChannelId, setActiveChannelId] = useState<string>('random');
   const [isFriendsViewActive, setIsFriendsViewActive] = useState<boolean>(false);
-  const [showUserList, setShowUserList] = useState<boolean>(true);
+  const [showUserList, setShowUserList] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
+  );
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
   const [isCallViewActive, setIsCallViewActive] = useState<boolean>(false);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [friendsRefreshTrigger, setFriendsRefreshTrigger] = useState<number>(0);
@@ -158,6 +162,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     (roomId: string) => {
       setActiveChannelId(roomId);
       setIsFriendsViewActive(false);
+      setIsMobileSidebarOpen(false);
       clearUnread(roomId);
     },
     [clearUnread]
@@ -467,6 +472,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     const targetChannel = channels.find((c) => c.id === channelId);
     setActiveChannelId(channelId);
     setIsFriendsViewActive(false);
+    setIsMobileSidebarOpen(false);
     clearUnread(channelId);
     // Clear any existing toasts for this room
     setNotifications((prev) => prev.filter((n) => n.room !== channelId));
@@ -568,6 +574,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   const handleSelectFriends = () => {
     requestNotificationPermissionOnce();
     setIsFriendsViewActive(true);
+    setIsMobileSidebarOpen(false);
   };
 
   const handleLogout = () => {
@@ -586,7 +593,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
   );
 
   return (
-    <div className="flex h-screen w-screen bg-canvas text-text-primary overflow-hidden font-sans">
+    <div className="flex h-[100dvh] w-screen bg-canvas text-text-primary overflow-hidden font-sans">
       {/* Left Navigation Sidebar */}
       <ChannelSidebar
         channels={channels}
@@ -602,6 +609,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
           setChannelError(null);
           setCreateChannelType(type);
           setIsCreateChannelOpen(true);
+          setIsMobileSidebarOpen(false);
         }}
         onDeleteChannel={handleDeleteChannel}
         channelError={channelError}
@@ -614,16 +622,18 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
         isFriendsActive={isFriendsViewActive}
         onSelectFriends={handleSelectFriends}
         onLogout={handleLogout}
+        isMobileOpen={isMobileSidebarOpen}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full min-w-0 relative bg-canvas">
         {/* Compact In-Call Banner when browsing Chat or Friends */}
         {webrtc.isInCall && !isCallViewActive && (
-          <div className="bg-online/10 border-b border-online/20 px-6 py-2 flex items-center justify-between text-xs font-medium text-online z-20 flex-shrink-0">
-            <div className="flex items-center space-x-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-online animate-pulse" />
-              <span>Active call in {activeCallLabel}</span>
+          <div className="bg-online/10 border-b border-online/20 px-3 sm:px-6 py-2 flex items-center justify-between gap-2 text-xs font-medium text-online z-20 flex-shrink-0">
+            <div className="flex items-center space-x-2 min-w-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-online animate-pulse flex-shrink-0" />
+              <span className="truncate">Active call in {activeCallLabel}</span>
             </div>
             <button
               type="button"
@@ -631,7 +641,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
                 setIsFriendsViewActive(false);
                 setIsCallViewActive(true);
               }}
-              className="bg-online hover:bg-online/90 text-canvas px-3 py-1 rounded-lg font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer"
+              className="bg-online hover:bg-online/90 text-canvas px-2.5 sm:px-3 py-1 rounded-lg font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer flex-shrink-0"
             >
               <Video className="w-3.5 h-3.5" />
               <span>Return to Call</span>
@@ -650,6 +660,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
               openRoomDirect(roomId);
               setNotifications((prev) => prev.filter((n) => n.room !== roomId));
             }}
+            onOpenMobileMenu={() => setIsMobileSidebarOpen(true)}
           />
         ) : isCallViewActive ? (
           <VideoGrid
@@ -673,6 +684,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             onToggleScreenShare={webrtc.toggleScreenShare}
             onLeaveCall={webrtc.leaveCall}
             onBackToChat={() => setIsCallViewActive(false)}
+            onOpenMobileMenu={() => setIsMobileSidebarOpen(true)}
           />
         ) : (
           <ChatArea
@@ -706,6 +718,7 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             onToggleCallView={() => setIsCallViewActive((prev) => !prev)}
             onJoinCall={webrtc.joinCall}
             showUserList={showUserList}
+            onOpenMobileMenu={() => setIsMobileSidebarOpen(true)}
           />
         )}
       </main>
@@ -716,6 +729,27 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
           users={onlineUsers}
           currentUsername={activeUsername}
           profiles={profiles}
+          onClose={() => setShowUserList(false)}
+        />
+      )}
+
+      {/* Draggable In-App Picture-in-Picture Call Mini-Player */}
+      {webrtc.isInCall && !isCallViewActive && (
+        <FloatingCallPiP
+          channelName={activeCallLabel}
+          localStream={webrtc.localStream}
+          localScreenStream={webrtc.localScreenStream}
+          peers={webrtc.peers}
+          currentUsername={activeUsername}
+          isAudioMuted={webrtc.isAudioMuted}
+          isVideoOff={webrtc.isVideoOff}
+          onExpand={() => {
+            setIsFriendsViewActive(false);
+            setIsCallViewActive(true);
+          }}
+          onToggleAudio={webrtc.toggleAudio}
+          onToggleVideo={webrtc.toggleVideo}
+          onLeaveCall={webrtc.leaveCall}
         />
       )}
 
@@ -763,7 +797,7 @@ export function App() {
 
   if (isLoading) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-canvas text-text-primary select-none">
+      <div className="flex h-[100dvh] w-screen items-center justify-center bg-canvas text-text-primary select-none">
         <div className="flex flex-col items-center space-y-3">
           <div className="w-10 h-10 rounded-xl bg-accent/15 border border-accent/25 flex items-center justify-center">
             <span className="text-accent font-bold text-base">W</span>

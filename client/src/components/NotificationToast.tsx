@@ -23,7 +23,7 @@ export const NotificationToast: React.FC<NotificationToastProps> = ({
   if (notifications.length === 0) return null;
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col space-y-2 w-80 max-w-[calc(100vw-2rem)] pointer-events-none select-none">
+    <div className="fixed bottom-3 right-3 sm:bottom-5 sm:right-5 z-50 flex flex-col space-y-2 w-[min(320px,calc(100vw-1.5rem))] pointer-events-none select-none">
       {notifications.map((item) => (
         <div
           key={item.id}

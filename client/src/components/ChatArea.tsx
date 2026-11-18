@@ -25,6 +25,7 @@ import {
   Check,
   Pin,
   CheckCheck,
+  Menu,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
@@ -76,6 +77,7 @@ interface ChatAreaProps {
   onToggleUserList?: () => void;
   onToggleCallView?: () => void;
   onJoinCall?: () => void;
+  onOpenMobileMenu?: () => void;
   showUserList?: boolean;
 }
 
@@ -153,6 +155,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onToggleUserList,
   onToggleCallView,
   onJoinCall,
+  onOpenMobileMenu,
   showUserList = true,
 }) => {
   const [inputText, setInputText] = useState('');
@@ -1046,8 +1049,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       )}
 
       {/* Refined Minimal Channel Header */}
-      <header className="h-14 border-b border-white/[0.07] px-6 flex items-center justify-between bg-canvas/80 backdrop-blur-md z-20 flex-shrink-0">
-        <div className="flex items-center space-x-2.5 min-w-0">
+      <header className="h-14 border-b border-white/[0.07] px-3 sm:px-6 flex items-center justify-between bg-canvas/80 backdrop-blur-md z-20 flex-shrink-0 gap-2">
+        <div className="flex items-center space-x-2 sm:space-x-2.5 min-w-0">
+          {onOpenMobileMenu && (
+            <button
+              type="button"
+              onClick={onOpenMobileMenu}
+              className="p-1.5 -ml-1 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface md:hidden flex-shrink-0"
+              title="Open Channels"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+          )}
           {isDm ? (
             <AtSign className="w-4 h-4 text-accent flex-shrink-0" />
           ) : isPrivate ? (
@@ -1282,24 +1295,28 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               type="button"
               onClick={onToggleCallView}
               className={clsx(
-                'px-3 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition-all',
+                'px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition-all',
                 isCallViewActive
                   ? 'bg-accent text-white hover:bg-accent-hover'
                   : 'bg-online/15 text-online border border-online/25 hover:bg-online/25'
               )}
+              title={isCallViewActive ? 'Back to Chat' : 'Call Stage'}
             >
               <Video className="w-3.5 h-3.5" />
-              <span>{isCallViewActive ? 'Back to Chat' : 'Call Stage'}</span>
+              <span className="hidden sm:inline">
+                {isCallViewActive ? 'Back to Chat' : 'Call Stage'}
+              </span>
             </button>
           ) : (
             onJoinCall && (
               <button
                 type="button"
                 onClick={onJoinCall}
-                className="px-3 py-1.5 rounded-lg bg-surface hover:bg-card border border-white/[0.08] text-text-primary text-xs font-medium flex items-center space-x-1.5 transition-all"
+                className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-surface hover:bg-card border border-white/[0.08] text-text-primary text-xs font-medium flex items-center space-x-1.5 transition-all"
+                title="Join Call"
               >
                 <Video className="w-3.5 h-3.5 text-online" />
-                <span>Join Call</span>
+                <span className="hidden sm:inline">Join Call</span>
               </button>
             )
           )}
@@ -1433,7 +1450,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       )}
 
       {/* Messages Feed */}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6">
         {isLoadingHistory && messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center select-none">
             <Loader2 className="w-5 h-5 animate-spin text-accent mb-2" />
@@ -1631,7 +1648,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       </div>
 
       {/* Composer Area: Errors + Reply Banner + Pending Attachment + Typing Indicator + Input */}
-      <div className="px-6 pb-5 pt-1 flex-shrink-0">
+      <div className="px-3 sm:px-6 pb-4 sm:pb-5 pt-1 flex-shrink-0">
         <div className="max-w-4xl relative">
           {/* Error Banner */}
           {uploadError && (

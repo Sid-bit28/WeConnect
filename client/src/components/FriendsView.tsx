@@ -10,6 +10,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
+  Menu,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Friend, FriendRequest, UserProfile } from '../types';
@@ -24,6 +25,7 @@ interface FriendsViewProps {
   refreshTrigger?: number;
   onFriendsChanged?: () => void;
   onOpenChat?: (channelId: string) => void;
+  onOpenMobileMenu?: () => void;
 }
 
 type TabType = 'online' | 'all' | 'pending' | 'add';
@@ -35,6 +37,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   refreshTrigger = 0,
   onFriendsChanged,
   onOpenChat,
+  onOpenMobileMenu,
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('online');
   const [friends, setFriends] = useState<Friend[]>([]);
@@ -207,15 +210,25 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   return (
     <div className="flex-1 flex flex-col bg-canvas h-full min-w-0 select-none">
       {/* Minimalist Top Bar */}
-      <header className="h-14 border-b border-white/[0.07] px-6 flex items-center bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0">
-        <div className="flex items-center space-x-2 mr-6 text-text-primary font-semibold text-sm">
-          <Users className="w-4 h-4 text-text-muted" />
-          <span>Friends</span>
+      <header className="h-14 border-b border-white/[0.07] px-3 sm:px-6 flex items-center bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0 gap-2 sm:gap-4">
+        <div className="flex items-center space-x-2 text-text-primary font-semibold text-sm flex-shrink-0">
+          {onOpenMobileMenu && (
+            <button
+              type="button"
+              onClick={onOpenMobileMenu}
+              className="p-1.5 -ml-1 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface md:hidden flex-shrink-0"
+              title="Open Channels"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+          )}
+          <Users className="w-4 h-4 text-text-muted hidden sm:block" />
+          <span className="hidden sm:inline">Friends</span>
         </div>
 
-        <div className="h-4 w-[1px] bg-white/[0.08] mr-5" />
+        <div className="h-4 w-[1px] bg-white/[0.08] hidden sm:block flex-shrink-0" />
 
-        <div className="flex items-center space-x-1.5 text-xs font-medium">
+        <div className="flex items-center space-x-1.5 text-xs font-medium overflow-x-auto whitespace-nowrap py-1 min-w-0 flex-1">
           <button
             type="button"
             onClick={() => setActiveTab('online')}

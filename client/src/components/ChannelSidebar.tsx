@@ -38,6 +38,8 @@ interface ChannelSidebarProps {
   onLeaveCall?: () => void;
   isFriendsActive?: boolean;
   onSelectFriends?: () => void;
+  isMobileOpen?: boolean;
+  onCloseMobile?: () => void;
   onLogout: () => void;
 }
 
@@ -62,6 +64,8 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
   onLeaveCall,
   isFriendsActive = false,
   onSelectFriends,
+  isMobileOpen = false,
+  onCloseMobile,
   onLogout,
 }) => {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -100,28 +104,54 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
       : 'Online';
 
   return (
-    <aside className="w-60 bg-surface border-r border-white/[0.07] flex flex-col h-full select-none flex-shrink-0 relative">
-      {/* Brand Header */}
-      <div className="h-14 px-4 flex items-center justify-between border-b border-white/[0.06] flex-shrink-0">
-        <div className="flex items-center space-x-2.5 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-accent/15 border border-accent/25 flex items-center justify-center flex-shrink-0">
-            <span className="text-accent font-bold text-xs">W</span>
-          </div>
-          <span className="font-semibold text-sm text-text-primary tracking-tight truncate">
-            WeConnect
-          </span>
-        </div>
-
-        {/* Minimal Live Status Indicator */}
-        <span
-          className={clsx('w-2 h-2 rounded-full flex-shrink-0 transition-colors', {
-            'bg-online shadow-[0_0_8px_rgba(16,185,129,0.5)]': connectionStatus === 'connected',
-            'bg-warning animate-pulse': connectionStatus === 'connecting',
-            'bg-danger': connectionStatus === 'error' || connectionStatus === 'disconnected',
-          })}
-          title={`Connection: ${connectionStatus}`}
+    <>
+      {/* Mobile Backdrop Scrim */}
+      {isMobileOpen && onCloseMobile && (
+        <div
+          onClick={onCloseMobile}
+          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-[1px] md:hidden"
         />
-      </div>
+      )}
+
+      <aside
+        className={clsx(
+          'fixed inset-y-0 left-0 z-40 w-[272px] max-w-[85vw] md:static md:z-auto md:w-64 md:max-w-none bg-surface border-r border-white/[0.07] flex flex-col h-full select-none flex-shrink-0 transition-transform duration-200 ease-out',
+          isMobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+        )}
+      >
+        {/* Brand Header */}
+        <div className="h-14 px-4 flex items-center justify-between border-b border-white/[0.06] flex-shrink-0">
+          <div className="flex items-center space-x-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-accent/15 border border-accent/25 flex items-center justify-center flex-shrink-0">
+              <span className="text-accent font-bold text-xs">W</span>
+            </div>
+            <span className="font-semibold text-sm text-text-primary tracking-tight truncate">
+              WeConnect
+            </span>
+          </div>
+
+          <div className="flex items-center space-x-2 flex-shrink-0">
+            {/* Minimal Live Status Indicator */}
+            <span
+              className={clsx('w-2 h-2 rounded-full flex-shrink-0 transition-colors', {
+                'bg-online shadow-[0_0_8px_rgba(16,185,129,0.5)]': connectionStatus === 'connected',
+                'bg-warning animate-pulse': connectionStatus === 'connecting',
+                'bg-danger': connectionStatus === 'error' || connectionStatus === 'disconnected',
+              })}
+              title={`Connection: ${connectionStatus}`}
+            />
+            {onCloseMobile && (
+              <button
+                type="button"
+                onClick={onCloseMobile}
+                className="p-1 rounded-lg text-text-muted hover:text-text-primary hover:bg-card md:hidden"
+                title="Close Menu"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
 
       {/* Inline Channel Error Banner */}
       {channelError && (
@@ -470,6 +500,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
           <LogOut className="w-4 h-4" />
         </button>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };

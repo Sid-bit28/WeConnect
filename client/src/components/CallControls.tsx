@@ -70,7 +70,7 @@ export const CallControls: React.FC<CallControlsProps> = ({
     <div className="relative" ref={popoverRef}>
       {/* Upward Obsidian Device Switcher Popover */}
       {isDevicesOpen && hasDeviceSwitcher && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 w-72 bg-surface/95 backdrop-blur-xl border border-white/[0.1] rounded-2xl shadow-2xl p-3.5 space-y-3.5 z-30 select-none">
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 w-[min(288px,calc(100vw-1.5rem))] bg-surface/95 backdrop-blur-xl border border-white/[0.1] rounded-2xl shadow-2xl p-3.5 space-y-3.5 z-30 select-none">
           {/* Microphone Selector */}
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-widest text-text-muted mb-1.5 px-1">
@@ -148,7 +148,7 @@ export const CallControls: React.FC<CallControlsProps> = ({
       )}
 
       {/* Main Dock */}
-      <div className="flex items-center justify-center space-x-2.5 bg-surface/90 backdrop-blur-xl px-4 py-2.5 rounded-2xl shadow-2xl border border-white/[0.08] select-none">
+      <div className="flex items-center justify-center space-x-2 sm:space-x-2.5 bg-surface/90 backdrop-blur-xl px-3 sm:px-4 py-2 sm:py-2.5 rounded-2xl shadow-2xl border border-white/[0.08] select-none max-w-[calc(100vw-1.5rem)]">
         {/* Microphone Toggle */}
         <button
           type="button"

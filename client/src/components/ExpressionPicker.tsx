@@ -107,7 +107,7 @@ export const ExpressionPicker: React.FC<ExpressionPickerProps> = ({
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-full right-0 mb-2 w-80 sm:w-96 bg-surface border border-white/[0.1] rounded-2xl shadow-2xl overflow-hidden z-30 flex flex-col select-none"
+      className="absolute bottom-full right-0 mb-2 w-[min(320px,calc(100vw-2rem))] sm:w-96 bg-surface border border-white/[0.1] rounded-2xl shadow-2xl overflow-hidden z-30 flex flex-col select-none"
     >
       {/* Tabs */}
       <div className="flex items-center px-3 pt-2.5 pb-2 border-b border-white/[0.06] space-x-1">

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import clsx from 'clsx';
-import { MicOff, VideoOff, ScreenShare, MessageSquare, Volume2, VolumeX } from 'lucide-react';
+import { MicOff, VideoOff, ScreenShare, MessageSquare, Volume2, VolumeX, Menu } from 'lucide-react';
 import type { PeerStream } from '../types';
 import { CallControls } from './CallControls';
 import { useActiveSpeaker } from '../hooks/useActiveSpeaker';
@@ -204,6 +204,7 @@ interface VideoGridProps {
   onToggleScreenShare: () => void;
   onLeaveCall: () => void;
   onBackToChat?: () => void;
+  onOpenMobileMenu?: () => void;
 }
 
 export const VideoGrid: React.FC<VideoGridProps> = ({
@@ -227,6 +228,7 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
   onToggleScreenShare,
   onLeaveCall,
   onBackToChat,
+  onOpenMobileMenu,
 }) => {
   const speakingUsers = useActiveSpeaker(localStream, currentUsername, isAudioMuted, peers);
 
@@ -263,11 +265,21 @@ export const VideoGrid: React.FC<VideoGridProps> = ({
   return (
     <div className="flex-1 flex flex-col bg-canvas h-full relative overflow-hidden select-none">
       {/* Minimal Call Stage Header */}
-      <header className="h-14 px-6 border-b border-white/[0.07] flex items-center justify-between bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0">
-        <div className="flex items-center space-x-2.5">
-          <span className="w-2 h-2 rounded-full bg-online animate-pulse" />
-          <span className="text-sm font-semibold text-text-primary">{channelName}</span>
-          <span className="text-xs text-text-muted">
+      <header className="h-14 px-3 sm:px-6 border-b border-white/[0.07] flex items-center justify-between bg-canvas/80 backdrop-blur-md z-10 flex-shrink-0 gap-2">
+        <div className="flex items-center space-x-2 sm:space-x-2.5 min-w-0">
+          {onOpenMobileMenu && (
+            <button
+              type="button"
+              onClick={onOpenMobileMenu}
+              className="p-1.5 -ml-1 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface md:hidden flex-shrink-0"
+              title="Open Channels"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+          )}
+          <span className="w-2 h-2 rounded-full bg-online animate-pulse flex-shrink-0" />
+          <span className="text-sm font-semibold text-text-primary truncate">{channelName}</span>
+          <span className="text-xs text-text-muted hidden sm:inline flex-shrink-0">
             {totalParticipants} {totalParticipants === 1 ? 'participant' : 'participants'}
           </span>
         </div>
