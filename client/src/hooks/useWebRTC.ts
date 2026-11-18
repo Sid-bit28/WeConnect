@@ -35,6 +35,7 @@ export function useWebRTC({
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>('');
 
   const localStreamRef = useRef<MediaStream | null>(null);
+  const localScreenStreamRef = useRef<MediaStream | null>(null);
   const screenTrackRef = useRef<MediaStreamTrack | null>(null);
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const screenPeerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -270,8 +271,16 @@ export function useWebRTC({
       localStreamRef.current = null;
     }
 
-    // Stop screen share track
+    // Stop all screen share tracks (video + audio)
+    if (localScreenStreamRef.current) {
+      localScreenStreamRef.current.getTracks().forEach((t) => {
+        t.onended = null;
+        t.stop();
+      });
+      localScreenStreamRef.current = null;
+    }
     if (screenTrackRef.current) {
+      screenTrackRef.current.onended = null;
       screenTrackRef.current.stop();
       screenTrackRef.current = null;
     }
@@ -365,6 +374,14 @@ export function useWebRTC({
       sendSignal(peerId, 'screen-leave');
     });
 
+    if (localScreenStreamRef.current) {
+      localScreenStreamRef.current.getTracks().forEach((t) => {
+        t.onended = null;
+        t.stop();
+      });
+      localScreenStreamRef.current = null;
+    }
+
     if (screenTrackRef.current) {
       screenTrackRef.current.onended = null;
       screenTrackRef.current.stop();
@@ -383,7 +400,7 @@ export function useWebRTC({
     setIsScreenSharing(false);
   }, [sendSignal]);
 
-  // Toggle Screen Share
+  // Toggle Screen Share (with tab/system audio capture + video-only fallback)
   const toggleScreenShare = useCallback(async () => {
     if (!isInCallRef.current) return;
 
@@ -394,19 +411,35 @@ export function useWebRTC({
       }
 
       try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-        });
-        const screenTrack = screenStream.getVideoTracks()[0];
+        let screenStream: MediaStream;
+        try {
+          screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: true,
+          });
+        } catch (audioErr: any) {
+          if (audioErr?.name === 'NotAllowedError' || audioErr?.name === 'AbortError') {
+            return;
+          }
+          // Fallback gracefully if browser/OS rejects audio capture constraint
+          screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+          });
+        }
+
+        const screenTrack = screenStream.getVideoTracks()[0] || null;
+        localScreenStreamRef.current = screenStream;
         screenTrackRef.current = screenTrack;
         setLocalScreenStream(screenStream);
         setIsScreenSharing(true);
 
-        screenTrack.onended = () => {
-          stopScreenShare();
-        };
+        if (screenTrack) {
+          screenTrack.onended = () => {
+            stopScreenShare();
+          };
+        }
 
-        // Create a screen peer connection for each currently connected peer
+        // Create a screen peer connection for each currently connected peer (video + audio tracks)
         const connectedPeers = Array.from(peerConnections.current.keys());
         for (const peerId of connectedPeers) {
           try {
@@ -415,7 +448,9 @@ export function useWebRTC({
             });
             screenPeerConnections.current.set(peerId, screenPc);
 
-            screenPc.addTrack(screenTrack, screenStream);
+            screenStream.getTracks().forEach((track) => {
+              screenPc.addTrack(track, screenStream);
+            });
 
             screenPc.onicecandidate = (event) => {
               if (event.candidate) {
@@ -431,8 +466,8 @@ export function useWebRTC({
           }
         }
       } catch (err: any) {
-        if (err.name !== 'NotAllowedError') {
-          setError(`Screen sharing error: ${err.message || 'Unknown error'}`);
+        if (err?.name !== 'NotAllowedError' && err?.name !== 'AbortError') {
+          setError(`Screen sharing error: ${err?.message || 'Unknown error'}`);
         }
       }
     } else {
@@ -452,13 +487,16 @@ export function useWebRTC({
           await pc.setLocalDescription(offer);
           sendSignal(msg.sender, 'offer', offer);
 
-          // If currently sharing screen, also send screen offer to the new peer!
-          if (screenTrackRef.current && localScreenStream) {
+          // If currently sharing screen, send ALL screen tracks (video + audio) to the new peer
+          const activeScreenStream = localScreenStreamRef.current;
+          if (activeScreenStream) {
             const screenPc = new RTCPeerConnection({
               iceServers: iceServersRef.current,
             });
             screenPeerConnections.current.set(msg.sender, screenPc);
-            screenPc.addTrack(screenTrackRef.current, localScreenStream);
+            activeScreenStream.getTracks().forEach((track) => {
+              screenPc.addTrack(track, activeScreenStream);
+            });
             screenPc.onicecandidate = (event) => {
               if (event.candidate) {
                 sendSignal(msg.sender, 'screen-candidate', event.candidate.toJSON());
@@ -500,13 +538,16 @@ export function useWebRTC({
               await pc.setLocalDescription(offer);
               sendSignal(peerId, 'offer', offer);
 
-              // If currently sharing screen, also send screen offer
-              if (screenTrackRef.current && localScreenStream) {
+              // If currently sharing screen, send ALL screen tracks (video + audio)
+              const activeScreenStream = localScreenStreamRef.current;
+              if (activeScreenStream) {
                 const screenPc = new RTCPeerConnection({
                   iceServers: iceServersRef.current,
                 });
                 screenPeerConnections.current.set(peerId, screenPc);
-                screenPc.addTrack(screenTrackRef.current, localScreenStream);
+                activeScreenStream.getTracks().forEach((track) => {
+                  screenPc.addTrack(track, activeScreenStream);
+                });
                 screenPc.onicecandidate = (event) => {
                   if (event.candidate) {
                     sendSignal(peerId, 'screen-candidate', event.candidate.toJSON());
@@ -584,8 +625,21 @@ export function useWebRTC({
             };
 
             screenPc.ontrack = (event) => {
-              const stream = event.streams[0] || new MediaStream([event.track]);
-              remoteScreenMap.current.set(peerId, stream);
+              let mergedStream: MediaStream;
+              if (event.streams && event.streams[0]) {
+                // Clone wrapper so React detects newly arrived tracks (e.g. audio after video)
+                mergedStream = new MediaStream(event.streams[0].getTracks());
+              } else {
+                const existing = remoteScreenMap.current.get(peerId);
+                if (existing) {
+                  const tracks = existing.getTracks().filter((t) => t.id !== event.track.id);
+                  tracks.push(event.track);
+                  mergedStream = new MediaStream(tracks);
+                } else {
+                  mergedStream = new MediaStream([event.track]);
+                }
+              }
+              remoteScreenMap.current.set(peerId, mergedStream);
               updatePeersState();
             };
 
@@ -659,7 +713,6 @@ export function useWebRTC({
     createPeerConnection,
     drainCandidates,
     drainScreenCandidates,
-    localScreenStream,
     sendSignal,
     updatePeersState,
     username,

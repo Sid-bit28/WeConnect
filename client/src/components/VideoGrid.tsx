@@ -1,6 +1,6 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import clsx from 'clsx';
-import { MicOff, VideoOff, ScreenShare, MessageSquare } from 'lucide-react';
+import { MicOff, VideoOff, ScreenShare, MessageSquare, Volume2, VolumeX } from 'lucide-react';
 import type { PeerStream } from '../types';
 import { CallControls } from './CallControls';
 import { useActiveSpeaker } from '../hooks/useActiveSpeaker';
@@ -31,6 +31,15 @@ const VideoTile: React.FC<VideoTileProps> = ({
   objectFit = 'cover',
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isRemoteScreenMuted, setIsRemoteScreenMuted] = useState(false);
+
+  const hasVideoTrack = stream && stream.getVideoTracks().length > 0 && !isVideoOff;
+  const hasScreenAudio = Boolean(isScreen && stream && stream.getAudioTracks().length > 0);
+  const shouldMuteVideo = isLocal || (isScreen && isRemoteScreenMuted);
+
+  useEffect(() => {
+    setIsRemoteScreenMuted(false);
+  }, [stream]);
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -38,7 +47,11 @@ const VideoTile: React.FC<VideoTileProps> = ({
     }
   }, [stream]);
 
-  const hasVideoTrack = stream && stream.getVideoTracks().length > 0 && !isVideoOff;
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.muted = shouldMuteVideo;
+    }
+  }, [shouldMuteVideo]);
 
   const getAvatarStyle = (name: string) => {
     const styles = [
@@ -72,7 +85,7 @@ const VideoTile: React.FC<VideoTileProps> = ({
           ref={videoRef}
           autoPlay
           playsInline
-          muted={isLocal}
+          muted={shouldMuteVideo}
           className={clsx(
             'w-full h-full',
             objectFit === 'contain' ? 'object-contain bg-black' : 'object-cover',
@@ -99,7 +112,41 @@ const VideoTile: React.FC<VideoTileProps> = ({
         <div className="absolute top-3 left-3 bg-canvas/85 backdrop-blur-md border border-online/30 text-online text-[11px] px-2.5 py-1 rounded-lg flex items-center space-x-1.5 shadow z-10">
           <ScreenShare className="w-3 h-3" />
           <span className="font-medium">{isLocal ? 'Your Screen' : 'Live Screen'}</span>
+          {isLocal && hasScreenAudio && (
+            <>
+              <span className="text-online/40">·</span>
+              <Volume2 className="w-3 h-3" />
+              <span className="font-medium">Audio On</span>
+            </>
+          )}
         </div>
+      )}
+
+      {/* Remote Screen Audio Mute/Unmute Toggle */}
+      {!isLocal && hasScreenAudio && (
+        <button
+          type="button"
+          onClick={() => setIsRemoteScreenMuted((prev) => !prev)}
+          className={clsx(
+            'absolute top-3 right-3 px-2.5 py-1 rounded-lg backdrop-blur-md border text-[11px] font-medium flex items-center space-x-1.5 shadow z-20 transition-colors cursor-pointer',
+            isRemoteScreenMuted
+              ? 'bg-danger/90 border-danger text-white hover:bg-danger-hover'
+              : 'bg-canvas/85 border-white/[0.1] text-text-primary hover:border-accent/50'
+          )}
+          title={isRemoteScreenMuted ? 'Unmute Shared Audio' : 'Mute Shared Audio'}
+        >
+          {isRemoteScreenMuted ? (
+            <>
+              <VolumeX className="w-3.5 h-3.5" />
+              <span>Muted</span>
+            </>
+          ) : (
+            <>
+              <Volume2 className="w-3.5 h-3.5 text-online" />
+              <span>Audio</span>
+            </>
+          )}
+        </button>
       )}
 
       {/* Bottom Status Overlay */}
