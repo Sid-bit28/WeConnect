@@ -151,6 +151,18 @@ func (c *Client) readPump() {
 			// Ephemeral typing indicator: broadcast to room without persisting
 			c.hub.BroadcastToRoom(c.room, msg)
 
+		case "read_receipt":
+			// Ephemeral DM-only read receipt: broadcast to room without persisting
+			if strings.HasPrefix(c.room, "dm:") {
+				c.hub.BroadcastToRoom(c.room, Message{
+					Type:      "read_receipt",
+					Room:      c.room,
+					Sender:    c.username,
+					Data:      msg.Data,
+					Timestamp: msg.Timestamp,
+				})
+			}
+
 		case "chat":
 			if strings.TrimSpace(msg.Content) == "" && msg.Data == nil {
 				continue

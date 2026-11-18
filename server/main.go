@@ -214,6 +214,46 @@ func meHandler(store Store) http.HandlerFunc {
 	})
 }
 
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+}
+
+func changePasswordHandler(store Store) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		if r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+
+		var req ChangePasswordRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid JSON request body")
+			return
+		}
+
+		if req.CurrentPassword == "" || len(req.NewPassword) < 6 {
+			writeError(w, http.StatusBadRequest, "Current password and new password (min 6 characters) are required")
+			return
+		}
+
+		if err := store.ChangePassword(user.Username, req.CurrentPassword, req.NewPassword); err != nil {
+			if errors.Is(err, ErrInvalidCredentials) {
+				writeError(w, http.StatusUnauthorized, "Current password is incorrect")
+			} else if errors.Is(err, ErrUserNotFound) {
+				writeError(w, http.StatusNotFound, "User not found")
+			} else {
+				writeError(w, http.StatusBadRequest, err.Error())
+			}
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "ok",
+		})
+	})
+}
+
 // --- Friends Handlers ---
 
 func getFriendsHandler(store Store, hub *Hub) http.HandlerFunc {
@@ -1025,11 +1065,101 @@ func spaHandler(staticDir string) http.HandlerFunc {
 	}
 }
 
+type PinMessageRequest struct {
+	ID   string `json:"id"`
+	Room string `json:"room"`
+}
+
+func pinMessageHandler(store Store, hub *Hub) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+
+		var req PinMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid JSON request body")
+			return
+		}
+
+		id := strings.TrimSpace(req.ID)
+		room := strings.TrimSpace(req.Room)
+		if id == "" || room == "" {
+			writeError(w, http.StatusBadRequest, "id and room are required")
+			return
+		}
+
+		if !isAuthorizedForRoom(room, user.Username, store) {
+			writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
+			return
+		}
+
+		updated, err := store.TogglePinMessage(id, room, user.Username)
+		if err != nil {
+			if errors.Is(err, ErrMessageNotFound) {
+				writeError(w, http.StatusNotFound, "Message not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "Failed to toggle pin")
+			}
+			return
+		}
+
+		hub.BroadcastToRoom(updated.Room, Message{
+			ID:        updated.ID,
+			Type:      "message_update",
+			Room:      updated.Room,
+			Sender:    updated.Sender,
+			Content:   updated.Content,
+			Data:      updated.Data,
+			Timestamp: updated.Timestamp,
+		})
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message": updated,
+		})
+	})
+}
+
+func pinnedMessagesHandler(store Store) http.HandlerFunc {
+	return requireAuth(store, func(w http.ResponseWriter, r *http.Request, user *User) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+
+		room := strings.TrimSpace(r.URL.Query().Get("room"))
+		if room == "" {
+			writeError(w, http.StatusBadRequest, "room query parameter is required")
+			return
+		}
+
+		if !isAuthorizedForRoom(room, user.Username, store) {
+			writeError(w, http.StatusForbidden, "Forbidden: not authorized to access this room")
+			return
+		}
+
+		msgs, err := store.GetPinnedMessages(room)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to retrieve pinned messages")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"messages": msgs,
+		})
+	})
+}
+
 // setupRoutes configures HTTP routes with Hub, Store, and SPA serving.
 func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
 	if hub.getStore() == nil && store != nil {
 		hub.SetStore(store)
 	}
+
+	authLimiter := NewRateLimiter(25, time.Minute)
+	uploadLimiter := NewRateLimiter(30, time.Minute)
+	previewLimiter := NewRateLimiter(40, time.Minute)
 
 	mux := http.NewServeMux()
 
@@ -1040,9 +1170,10 @@ func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
 	// Config endpoints
 	mux.HandleFunc("/api/config/ice", iceConfigHandler())
 
-	// Auth endpoints
-	mux.HandleFunc("/api/auth/register", registerHandler(store))
-	mux.HandleFunc("/api/auth/login", loginHandler(store))
+	// Auth endpoints (rate-limited)
+	mux.HandleFunc("/api/auth/register", authLimiter.Middleware(registerHandler(store)))
+	mux.HandleFunc("/api/auth/login", authLimiter.Middleware(loginHandler(store)))
+	mux.HandleFunc("/api/auth/password", authLimiter.Middleware(changePasswordHandler(store)))
 	mux.HandleFunc("/api/auth/me", meHandler(store))
 
 	// Friends endpoints
@@ -1061,16 +1192,19 @@ func setupRoutes(hub *Hub, store Store, staticDir string) http.Handler {
 	mux.HandleFunc("/api/channels/invite", inviteChannelHandler(store, hub))
 	mux.HandleFunc("/api/messages", messagesHandler(store, hub))
 	mux.HandleFunc("/api/messages/react", reactMessageHandler(store, hub))
+	mux.HandleFunc("/api/messages/pin", pinMessageHandler(store, hub))
+	mux.HandleFunc("/api/messages/pinned", pinnedMessagesHandler(store))
 	mux.HandleFunc("/api/messages/search", searchMessagesHandler(store))
 
-	// Uploads & GIF endpoints
+	// Uploads, GIFs & Link Previews endpoints
 	uploadDir := strings.TrimSpace(os.Getenv("UPLOAD_DIR"))
 	if uploadDir == "" {
 		uploadDir = "./data/uploads"
 	}
-	mux.HandleFunc("/api/upload", uploadHandler(store, uploadDir))
+	mux.HandleFunc("/api/upload", uploadLimiter.Middleware(uploadHandler(store, uploadDir)))
 	mux.HandleFunc("/api/uploads/", serveUploadHandler(uploadDir))
 	mux.HandleFunc("/api/gifs", gifSearchHandler(store))
+	mux.HandleFunc("/api/link-preview", previewLimiter.Middleware(linkPreviewHandler(store)))
 
 	// Single-Port SPA serving
 	mux.HandleFunc("/", spaHandler(staticDir))

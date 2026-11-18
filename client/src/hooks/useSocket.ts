@@ -33,6 +33,7 @@ export function useSocket(
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [users, setUsers] = useState<string[]>([]);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const [peerLastReadTimestamp, setPeerLastReadTimestamp] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -65,6 +66,7 @@ export function useSocket(
   useEffect(() => {
     setMessages([]);
     setUsers([]);
+    setPeerLastReadTimestamp(0);
     setError(null);
     clearAllTypingTimers();
 
@@ -226,6 +228,16 @@ export function useSocket(
                 setMessages((prev) => prev.filter((m) => m.id !== msg.id));
               }
               break;
+
+            case 'read_receipt': {
+              if (msg.sender && msg.sender.toLowerCase() !== username.toLowerCase()) {
+                const rawTs = Number(msg.data?.timestamp || msg.timestamp || Date.now());
+                if (Number.isFinite(rawTs) && rawTs > 0) {
+                  setPeerLastReadTimestamp((prev) => Math.max(prev, rawTs));
+                }
+              }
+              break;
+            }
 
             case 'typing': {
               const sender = msg.sender;
@@ -407,6 +419,26 @@ export function useSocket(
     [room, username]
   );
 
+  const sendReadReceipt = useCallback(
+    (lastReadId?: string, timestamp?: number) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      const ts = timestamp || Date.now();
+      const message: Message = {
+        type: 'read_receipt',
+        room,
+        sender: username,
+        data: { lastReadId, timestamp: ts },
+        timestamp: ts,
+      };
+      try {
+        wsRef.current.send(JSON.stringify(message));
+      } catch {
+        // Ignore transient read receipt errors
+      }
+    },
+    [room, username]
+  );
+
   const sendSignal = useCallback(
     (target: string, signalType: string, payload?: any): boolean => {
       return send('signal', undefined, { target, signalType, payload });
@@ -439,9 +471,11 @@ export function useSocket(
     isLoadingHistory,
     users,
     typingUsers,
+    peerLastReadTimestamp,
     error,
     send,
     sendTyping,
+    sendReadReceipt,
     sendSignal,
     connect,
     disconnect,

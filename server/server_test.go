@@ -1821,3 +1821,292 @@ func TestUserProfileAndStatus(t *testing.T) {
 		t.Fatalf("expected cleared avatar and away status, got %+v", meRes.User)
 	}
 }
+
+func TestPinnedMessages(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+	_, aliceToken, _ := store.Register("alice", "password123")
+	_, bobToken, _ := store.Register("bob", "password123")
+	_, charlieToken, _ := store.Register("charlie", "password123")
+
+	aliceWS := connectWS(t, server.URL, "random", aliceToken)
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	if err := aliceWS.WriteJSON(Message{Type: "chat", Content: "Important release notes"}); err != nil {
+		t.Fatalf("write chat failed: %v", err)
+	}
+	echo := readNextMessage(t, aliceWS, 2*time.Second)
+	msgID := echo.ID
+
+	// 1. Pin message -> 200 + message_update broadcast
+	w := doJSONRequest(handler, "POST", "/api/messages/pin", map[string]string{
+		"id":   msgID,
+		"room": "random",
+	}, bobToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 pinning message, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	pinBroadcast := readNextMessage(t, aliceWS, 2*time.Second)
+	if pinBroadcast.Type != "message_update" || pinBroadcast.ID != msgID {
+		t.Fatalf("expected message_update broadcast on pin, got %+v", pinBroadcast)
+	}
+	pinData, _ := pinBroadcast.Data.(map[string]any)
+	if pinData["pinned"] != true || pinData["pinnedBy"] != "bob" {
+		t.Fatalf("expected pinned=true pinnedBy=bob, got %+v", pinBroadcast.Data)
+	}
+
+	// 2. GET /api/messages/pinned returns the pinned message
+	w = doJSONRequest(handler, "GET", "/api/messages/pinned?room=random", nil, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/messages/pinned, got %d", w.Code)
+	}
+	var pinnedRes struct {
+		Messages []Message `json:"messages"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &pinnedRes)
+	if len(pinnedRes.Messages) != 1 || pinnedRes.Messages[0].ID != msgID {
+		t.Fatalf("expected 1 pinned message, got %+v", pinnedRes.Messages)
+	}
+
+	// 3. Unpin message -> GET /api/messages/pinned returns empty slice
+	w = doJSONRequest(handler, "POST", "/api/messages/pin", map[string]string{
+		"id":   msgID,
+		"room": "random",
+	}, aliceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 unpinning message, got %d", w.Code)
+	}
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // message_update
+
+	w = doJSONRequest(handler, "GET", "/api/messages/pinned?room=random", nil, aliceToken)
+	_ = json.Unmarshal(w.Body.Bytes(), &pinnedRes)
+	if len(pinnedRes.Messages) != 0 {
+		t.Fatalf("expected 0 pinned messages after unpin, got %d", len(pinnedRes.Messages))
+	}
+
+	// 4. Unauthorized DM pin access -> 403
+	w = doJSONRequest(handler, "GET", "/api/messages/pinned?room=dm:alice:bob", nil, charlieToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for charlie on dm pinned messages, got %d", w.Code)
+	}
+}
+
+func TestDMReadReceipts(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	hub.SetStore(store)
+	server := httptest.NewServer(setupRoutes(hub, store, ""))
+	defer server.Close()
+
+	handler := server.Config.Handler
+	_, aliceToken, _ := store.Register("alice", "password123")
+	_, bobToken, _ := store.Register("bob", "password123")
+
+	aliceWS := connectWS(t, server.URL, "dm:alice:bob", aliceToken)
+	defer aliceWS.Close()
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	bobWS := connectWS(t, server.URL, "dm:alice:bob", bobToken)
+	defer bobWS.Close()
+	_ = readNextMessage(t, bobWS, 2*time.Second)   // join
+	_ = readNextMessage(t, bobWS, 2*time.Second)   // users
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // bob join
+	_ = readNextMessage(t, aliceWS, 2*time.Second) // users
+
+	// Bob sends read_receipt in DM -> Alice receives it
+	if err := bobWS.WriteJSON(Message{
+		Type: "read_receipt",
+		Data: map[string]any{"lastReadId": "msg-42"},
+	}); err != nil {
+		t.Fatalf("write read_receipt failed: %v", err)
+	}
+	_ = readNextMessage(t, bobWS, 2*time.Second) // echo
+	aliceReceipt := readNextMessage(t, aliceWS, 2*time.Second)
+	if aliceReceipt.Type != "read_receipt" || aliceReceipt.Sender != "bob" || aliceReceipt.Room != "dm:alice:bob" {
+		t.Fatalf("alice expected read_receipt from bob, got %+v", aliceReceipt)
+	}
+
+	// Verify read_receipt was NOT persisted to message history
+	w := doJSONRequest(handler, "GET", "/api/messages?room=dm:alice:bob", nil, aliceToken)
+	var hist struct {
+		Messages []Message `json:"messages"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &hist)
+	if len(hist.Messages) != 0 {
+		t.Fatalf("read_receipt must not be persisted, got %d messages", len(hist.Messages))
+	}
+}
+
+func TestLinkPreviewSSRFAndMetadata(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	handler := setupRoutes(hub, store, "")
+
+	_, token, _ := store.Register("alice", "password123")
+
+	// 1. Unauthenticated -> 401
+	w := doJSONRequest(handler, "GET", "/api/link-preview?url=https://example.com", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated link-preview, got %d", w.Code)
+	}
+
+	// 2. SSRF & invalid scheme blocking -> 400
+	blockedURLs := []string{
+		"http://127.0.0.1",
+		"http://127.0.0.1:8080/health",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://10.0.0.1/admin",
+		"http://192.168.1.1/",
+		"http://[::1]/",
+		"http://localhost:8080/",
+		"http://user:pass@example.com/",
+		"file:///etc/passwd",
+		"javascript:alert(1)",
+	}
+	for _, u := range blockedURLs {
+		req := httptest.NewRequest("GET", "/api/link-preview?url="+url.QueryEscape(u), nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rw := httptest.NewRecorder()
+		handler.ServeHTTP(rw, req)
+		if rw.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 SSRF block for %q, got %d (%s)", u, rw.Code, rw.Body.String())
+		}
+	}
+
+	// 3. HTML Metadata extraction unit verification (relative og:image, entities, fallback)
+	pageURL, _ := url.Parse("https://example.com/posts/hello")
+	sampleHTML := `<!doctype html>
+<html>
+<head>
+  <title>Fallback Title</title>
+  <meta property="og:title" content="WeConnect &amp; Go &quot;Fast&quot;">
+  <meta content="Real-time   chat &amp; video." property="og:description">
+  <meta property="og:image" content="/assets/preview.png">
+  <meta property="og:site_name" content="WeConnect">
+</head>
+<body>hello</body>
+</html>`
+	meta := extractHTMLMetadata(pageURL, sampleHTML)
+	if meta.Title != `WeConnect & Go "Fast"` {
+		t.Fatalf("unexpected extracted title: %q", meta.Title)
+	}
+	if meta.Description != "Real-time chat & video." {
+		t.Fatalf("unexpected extracted description: %q", meta.Description)
+	}
+	if meta.Image != "https://example.com/assets/preview.png" {
+		t.Fatalf("unexpected resolved og:image: %q", meta.Image)
+	}
+	if meta.SiteName != "WeConnect" {
+		t.Fatalf("unexpected siteName: %q", meta.SiteName)
+	}
+
+	// Fallback to <title> and reject unsafe javascript: image
+	fallbackHTML := `<html><head><title>  Simple   Page </title><meta property="og:image" content="javascript:alert(1)"></head></html>`
+	fallbackMeta := extractHTMLMetadata(pageURL, fallbackHTML)
+	if fallbackMeta.Title != "Simple Page" || fallbackMeta.Image != "" || fallbackMeta.SiteName != "example.com" {
+		t.Fatalf("unexpected fallback metadata: %+v", fallbackMeta)
+	}
+}
+
+func TestChangePassword(t *testing.T) {
+	hub := NewHub()
+	store, _ := NewStore("")
+	handler := setupRoutes(hub, store, "")
+
+	_, token, err := store.Register("alice", "oldpassword")
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	// 1. Wrong current password -> 401
+	w := doJSONRequest(handler, "PUT", "/api/auth/password", map[string]string{
+		"currentPassword": "wrongpassword",
+		"newPassword":     "newpassword123",
+	}, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong current password, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// 2. Too short new password -> 400
+	w = doJSONRequest(handler, "PUT", "/api/auth/password", map[string]string{
+		"currentPassword": "oldpassword",
+		"newPassword":     "123",
+	}, token)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for short new password, got %d", w.Code)
+	}
+
+	// 3. Valid change -> 200
+	w = doJSONRequest(handler, "PUT", "/api/auth/password", map[string]string{
+		"currentPassword": "oldpassword",
+		"newPassword":     "newpassword123",
+	}, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid password change, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// 4. Old password login fails (401), new password login succeeds (200)
+	w = doJSONRequest(handler, "POST", "/api/auth/login", map[string]string{
+		"username": "alice",
+		"password": "oldpassword",
+	}, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 logging in with old password, got %d", w.Code)
+	}
+
+	w = doJSONRequest(handler, "POST", "/api/auth/login", map[string]string{
+		"username": "alice",
+		"password": "newpassword123",
+	}, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 logging in with new password, got %d", w.Code)
+	}
+}
+
+func TestRateLimiterMiddleware(t *testing.T) {
+	limiter := NewRateLimiter(3, time.Minute)
+	wrapped := limiter.Middleware(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// First 3 requests from IP A succeed
+	for i := 1; i <= 3; i++ {
+		req := httptest.NewRequest("POST", "/api/auth/login", nil)
+		req.RemoteAddr = "198.51.100.10:12345"
+		w := httptest.NewRecorder()
+		wrapped(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d expected 200, got %d", i, w.Code)
+		}
+	}
+
+	// 4th request from IP A returns 429 + Retry-After header
+	req4 := httptest.NewRequest("POST", "/api/auth/login", nil)
+	req4.RemoteAddr = "198.51.100.10:12345"
+	w4 := httptest.NewRecorder()
+	wrapped(w4, req4)
+	if w4.Code != http.StatusTooManyRequests {
+		t.Fatalf("request 4 expected 429, got %d", w4.Code)
+	}
+	if w4.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected Retry-After header on 429 response")
+	}
+
+	// Request from different IP B still succeeds (200)
+	reqOther := httptest.NewRequest("POST", "/api/auth/login", nil)
+	reqOther.RemoteAddr = "198.51.100.11:54321"
+	wOther := httptest.NewRecorder()
+	wrapped(wOther, reqOther)
+	if wOther.Code != http.StatusOK {
+		t.Fatalf("different IP expected 200, got %d", wOther.Code)
+	}
+}

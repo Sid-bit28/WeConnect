@@ -316,9 +316,11 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
     isLoadingHistory,
     users,
     typingUsers,
+    peerLastReadTimestamp,
     error: socketError,
     send,
     sendTyping,
+    sendReadReceipt,
     sendSignal,
     connect,
   } = useSocket(activeChannelId, activeUsername, {
@@ -695,8 +697,10 @@ function AuthenticatedApp({ user, token, onLogout }: AuthenticatedAppProps) {
             isCallViewActive={isCallViewActive}
             memberCount={onlineUsers.length}
             typingUsers={typingUsers}
+            peerLastReadTimestamp={peerLastReadTimestamp}
             onSendMessage={handleSendMessage}
             onTyping={sendTyping}
+            onSendReadReceipt={sendReadReceipt}
             onReconnect={connect}
             onToggleUserList={() => setShowUserList((prev) => !prev)}
             onToggleCallView={() => setIsCallViewActive((prev) => !prev)}

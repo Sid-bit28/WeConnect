@@ -17,7 +17,8 @@ export type MessageType =
   | "call_ended"
   | "call_declined"
   | "call-decline"
-  | "profile_update";
+  | "profile_update"
+  | "read_receipt";
 
 export type UserStatus = 'online' | 'away' | 'dnd';
 
@@ -25,6 +26,14 @@ export interface UserProfile {
   username: string;
   avatarUrl?: string;
   status?: UserStatus;
+}
+
+export interface LinkPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  image?: string;
+  siteName?: string;
 }
 
 export interface Attachment {
@@ -60,6 +69,8 @@ export interface MessageData {
   replyTo?: ReplyToData;
   reactions?: Record<string, string[]>;
   edited?: boolean;
+  pinned?: boolean;
+  pinnedBy?: string;
   [key: string]: any;
 }
 

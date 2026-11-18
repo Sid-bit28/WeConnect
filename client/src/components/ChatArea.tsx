@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Hash,
   Volume2,
@@ -23,6 +23,8 @@ import {
   Lock,
   UserPlus,
   Check,
+  Pin,
+  CheckCheck,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
@@ -42,6 +44,7 @@ import { getStickerById, getStickerSvgDataUri } from '../utils/stickers';
 import { ImageLightbox } from './ImageLightbox';
 import { ExpressionPicker } from './ExpressionPicker';
 import { UserAvatar } from './UserAvatar';
+import { LinkPreviewCard, extractFirstUrl } from './LinkPreviewCard';
 
 interface ChatAreaProps {
   roomId: string;
@@ -65,8 +68,10 @@ interface ChatAreaProps {
   isCallViewActive?: boolean;
   memberCount?: number;
   typingUsers?: string[];
+  peerLastReadTimestamp?: number;
   onSendMessage: (content: string, data?: MessageData) => void;
   onTyping?: (isTyping: boolean) => void;
+  onSendReadReceipt?: (lastReadId?: string, timestamp?: number) => void;
   onReconnect?: () => void;
   onToggleUserList?: () => void;
   onToggleCallView?: () => void;
@@ -140,8 +145,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   isCallViewActive = false,
   memberCount = 1,
   typingUsers = [],
+  peerLastReadTimestamp = 0,
   onSendMessage,
   onTyping,
+  onSendReadReceipt,
   onReconnect,
   onToggleUserList,
   onToggleCallView,
@@ -156,7 +163,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
 
-  // Reply, Edit, Highlight, Search & Invite states
+  // Reply, Edit, Highlight, Search, Invite & Pins states
   const [replyingTo, setReplyingTo] = useState<ReplyToData | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
@@ -173,9 +180,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [invitedFeedback, setInvitedFeedback] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
 
+  const [isPinsOpen, setIsPinsOpen] = useState(false);
+  const [pinnedMessages, setPinnedMessages] = useState<Message[]>([]);
+  const [loadingPins, setLoadingPins] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const invitePopoverRef = useRef<HTMLDivElement | null>(null);
+  const pinsPopoverRef = useRef<HTMLDivElement | null>(null);
+  const lastSentReceiptRef = useRef<string>('');
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -184,9 +197,42 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const typingIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isCurrentlyTypingRef = useRef<boolean>(false);
 
+  const fetchPinnedMessages = useCallback(async () => {
+    if (!roomId || !token) return;
+    setLoadingPins(true);
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/api/messages/pinned?room=${encodeURIComponent(roomId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setPinnedMessages(Array.isArray(data?.messages) ? data.messages : []);
+      }
+    } catch {
+      // Ignore transient pinned fetch errors
+    } finally {
+      setLoadingPins(false);
+    }
+  }, [roomId, token]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
+
+  // Keep pinned messages synced when room loads or messages receive pin updates
+  const pinnedSignature = messages
+    .filter((m) => Boolean((m.data as MessageData | undefined)?.pinned))
+    .map((m) => m.id || '')
+    .join(',');
+
+  useEffect(() => {
+    void fetchPinnedMessages();
+  }, [fetchPinnedMessages, pinnedSignature]);
 
   // Close invite popover on click-outside or Escape
   useEffect(() => {
@@ -207,6 +253,56 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     };
   }, [isInviteOpen]);
 
+  // Close pins popover on click-outside or Escape
+  useEffect(() => {
+    if (!isPinsOpen) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsPinsOpen(false);
+    };
+    const handleClickOutside = (e: MouseEvent) => {
+      if (pinsPopoverRef.current && !pinsPopoverRef.current.contains(e.target as Node)) {
+        setIsPinsOpen(false);
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isPinsOpen]);
+
+  // Emit DM read receipts cleanly when viewing peer messages
+  useEffect(() => {
+    if (!isDm || connectionStatus !== 'connected' || !onSendReadReceipt) return;
+
+    const emitIfUnread = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      let latestPeerMsg: Message | null = null;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.type === 'chat' && m.sender.toLowerCase() !== currentUsername.toLowerCase()) {
+          latestPeerMsg = m;
+          break;
+        }
+      }
+      if (!latestPeerMsg) return;
+      const sig = `${roomId}:${latestPeerMsg.id || ''}:${latestPeerMsg.timestamp || 0}`;
+      if (lastSentReceiptRef.current === sig) return;
+      lastSentReceiptRef.current = sig;
+      onSendReadReceipt(latestPeerMsg.id, latestPeerMsg.timestamp || Date.now());
+    };
+
+    emitIfUnread();
+    const handleVisibility = () => {
+      if (!document.hidden) emitIfUnread();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [isDm, roomId, connectionStatus, messages, currentUsername, onSendReadReceipt]);
+
   // Reset per-room interactive states when switching rooms
   useEffect(() => {
     setUploadError(null);
@@ -219,6 +315,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     setIsInviteOpen(false);
     setInviteError(null);
     setInvitedFeedback(null);
+    setIsPinsOpen(false);
+    setPinnedMessages([]);
+    lastSentReceiptRef.current = '';
     return () => {
       if (typingIdleTimeoutRef.current) {
         clearTimeout(typingIdleTimeoutRef.current);
@@ -591,9 +690,31 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }
   };
 
+  const handleTogglePin = async (msgId: string) => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/messages/pin`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: msgId, room: roomId }),
+      });
+      if (res.ok) {
+        void fetchPinnedMessages();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setUploadError(data.error || 'Failed to update pin status.');
+      }
+    } catch {
+      setUploadError('Network error while pinning message.');
+    }
+  };
+
   const renderHoverActions = (msg: Message, isAuthor: boolean) => {
     if (!msg.id || editingMessageId === msg.id) return null;
     const msgId = msg.id;
+    const isPinned = Boolean((msg.data as MessageData | undefined)?.pinned);
 
     return (
       <div className="absolute -top-3 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-20 flex items-center space-x-0.5 bg-surface/95 backdrop-blur-md border border-white/[0.1] rounded-lg px-1 py-0.5 shadow-lg">
@@ -625,6 +746,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           title="Reply"
         >
           <Reply className="w-3.5 h-3.5" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void handleTogglePin(msgId)}
+          className={clsx(
+            'p-1 rounded-md transition-colors',
+            isPinned
+              ? 'text-accent bg-accent-muted hover:bg-accent/25'
+              : 'text-text-muted hover:text-text-primary hover:bg-card'
+          )}
+          title={isPinned ? 'Unpin message' : 'Pin message'}
+        >
+          <Pin className="w-3.5 h-3.5" />
         </button>
 
         {isAuthor && (
@@ -730,12 +865,27 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           </div>
         ) : (
           msg.content && (
-            <div className="text-sm text-text-primary/90 break-words leading-relaxed">
-              <MarkdownContent content={msg.content} />
-              {showInlineEditedTag && data.edited && (
-                <span className="ml-1.5 text-[10px] text-text-muted select-none">(edited)</span>
-              )}
-            </div>
+            <>
+              <div className="text-sm text-text-primary/90 break-words leading-relaxed">
+                <MarkdownContent content={msg.content} />
+                {showInlineEditedTag && data.edited && (
+                  <span className="ml-1.5 text-[10px] text-text-muted select-none">(edited)</span>
+                )}
+                {showInlineEditedTag && data.pinned && (
+                  <span
+                    className="ml-1.5 inline-flex items-center space-x-0.5 text-[10px] text-accent select-none"
+                    title={data.pinnedBy ? `Pinned by ${data.pinnedBy}` : 'Pinned'}
+                  >
+                    <Pin className="w-2.5 h-2.5" />
+                    <span>Pinned</span>
+                  </span>
+                )}
+              </div>
+              {(() => {
+                const firstUrl = extractFirstUrl(msg.content);
+                return firstUrl ? <LinkPreviewCard url={firstUrl} token={token} /> : null;
+              })()}
+            </>
           )
         )}
 
@@ -862,6 +1012,17 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     connectionStatus === 'connected' &&
     !isUploading &&
     (Boolean(inputText.trim()) || Boolean(pendingAttachment));
+
+  let latestOwnChatIndex = -1;
+  if (isDm) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.type === 'chat' && m.sender.toLowerCase() === currentUsername.toLowerCase()) {
+        latestOwnChatIndex = i;
+        break;
+      }
+    }
+  }
 
   return (
     <div
@@ -998,6 +1159,104 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               )}
             </div>
           )}
+
+          {/* Pinned Messages Popover */}
+          <div className="relative" ref={pinsPopoverRef}>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !isPinsOpen;
+                setIsPinsOpen(next);
+                if (next) void fetchPinnedMessages();
+              }}
+              className={clsx(
+                'px-2 py-1.5 rounded-lg border text-xs transition-all flex items-center space-x-1',
+                isPinsOpen
+                  ? 'bg-card border-accent/40 text-accent'
+                  : pinnedMessages.length > 0
+                  ? 'bg-transparent border-transparent text-text-secondary hover:text-text-primary hover:bg-surface'
+                  : 'bg-transparent border-transparent text-text-muted hover:text-text-primary hover:bg-surface'
+              )}
+              title="Pinned messages"
+            >
+              <Pin className="w-3.5 h-3.5" />
+              {pinnedMessages.length > 0 && (
+                <span className="text-[10px] font-semibold text-accent">
+                  {pinnedMessages.length}
+                </span>
+              )}
+            </button>
+
+            {isPinsOpen && (
+              <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-surface/95 backdrop-blur-xl border border-white/[0.1] rounded-2xl shadow-2xl p-3.5 z-30 select-none">
+                <div className="flex items-center justify-between mb-2.5 px-0.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-text-muted">
+                    Pinned Messages ({pinnedMessages.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsPinsOpen(false)}
+                    className="p-0.5 rounded text-text-muted hover:text-text-primary"
+                    title="Close"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {loadingPins && pinnedMessages.length === 0 ? (
+                  <div className="py-6 flex items-center justify-center space-x-2 text-xs text-text-muted">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
+                    <span>Loading pins...</span>
+                  </div>
+                ) : pinnedMessages.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-text-muted">
+                    No pinned messages in this room yet.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto pr-0.5">
+                    {pinnedMessages.map((pm, idx) => (
+                      <div
+                        key={pm.id || `pin-${idx}`}
+                        className="p-2.5 rounded-xl bg-canvas/70 hover:bg-card/80 border border-white/[0.06] transition-colors group"
+                      >
+                        <div className="flex items-center justify-between space-x-2 mb-1">
+                          <div className="flex items-center space-x-1.5 min-w-0">
+                            <span className="text-xs font-semibold text-text-primary truncate">
+                              {pm.sender}
+                            </span>
+                            <span className="text-[10px] text-text-muted flex-shrink-0">
+                              {formatTimestamp(pm.timestamp)}
+                            </span>
+                          </div>
+                          {pm.id && (
+                            <button
+                              type="button"
+                              onClick={() => void handleTogglePin(pm.id!)}
+                              className="text-[10px] text-text-muted hover:text-danger transition-colors flex-shrink-0"
+                              title="Unpin"
+                            >
+                              Unpin
+                            </button>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (pm.id) scrollToMessage(pm.id);
+                            setIsPinsOpen(false);
+                          }}
+                          className="w-full text-left text-xs text-text-secondary hover:text-text-primary line-clamp-2 break-words transition-colors"
+                        >
+                          {getReplyPreview(pm)}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Search Toggle */}
           <button
@@ -1262,7 +1521,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
               const isSelf = msg.sender.toLowerCase() === currentUsername.toLowerCase();
               const isHighlighted = Boolean(msg.id && highlightedMsgId === msg.id);
-              const isEdited = Boolean((msg.data as MessageData | undefined)?.edited);
+              const msgData = (msg.data || {}) as MessageData;
+              const isEdited = Boolean(msgData.edited);
+              const isPinned = Boolean(msgData.pinned);
+              const showSeen =
+                isDm &&
+                index === latestOwnChatIndex &&
+                peerLastReadTimestamp > 0 &&
+                peerLastReadTimestamp >= (msg.timestamp || 0);
 
               const attachRef = (el: HTMLDivElement | null) => {
                 if (!msg.id) return;
@@ -1286,7 +1552,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     <span className="absolute left-2 top-1 text-[10px] text-text-muted opacity-0 group-hover:opacity-100 transition-opacity select-none w-8 text-right">
                       {formatTimestamp(msg.timestamp)}
                     </span>
-                    <div className="flex-1 min-w-0">{renderMessageRichBody(msg, true)}</div>
+                    <div className="flex-1 min-w-0">
+                      {renderMessageRichBody(msg, true)}
+                      {showSeen && (
+                        <div className="mt-1 flex items-center space-x-1 text-[10px] text-text-muted select-none">
+                          <CheckCheck className="w-3 h-3 text-accent" />
+                          <span>Seen</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               }
@@ -1329,9 +1603,24 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       {isEdited && (
                         <span className="text-[10px] text-text-muted select-none">(edited)</span>
                       )}
+                      {isPinned && (
+                        <span
+                          className="inline-flex items-center space-x-0.5 text-[10px] text-accent select-none"
+                          title={msgData.pinnedBy ? `Pinned by ${msgData.pinnedBy}` : 'Pinned'}
+                        >
+                          <Pin className="w-2.5 h-2.5" />
+                          <span>Pinned</span>
+                        </span>
+                      )}
                     </div>
 
                     {renderMessageRichBody(msg, false)}
+                    {showSeen && (
+                      <div className="mt-1 flex items-center space-x-1 text-[10px] text-text-muted select-none">
+                        <CheckCheck className="w-3 h-3 text-accent" />
+                        <span>Seen</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               );

@@ -1,5 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Trash2, Check, Loader2, AlertCircle } from 'lucide-react';
+import {
+  Upload,
+  Trash2,
+  Check,
+  Loader2,
+  AlertCircle,
+  KeyRound,
+  ChevronDown,
+  ChevronUp,
+  CheckCircle2,
+} from 'lucide-react';
 import clsx from 'clsx';
 import type { UserProfile, UserStatus } from '../types';
 import { getApiBaseUrl } from '../utils/api';
@@ -40,12 +50,29 @@ export const ProfilePopover: React.FC<ProfilePopoverProps> = ({
 }) => {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Change Password collapsible state
+  const [isPasswordOpen, setIsPasswordOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwSuccess, setPwSuccess] = useState<string | null>(null);
+
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setError(null);
+    setIsPasswordOpen(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPwError(null);
+    setPwSuccess(null);
+
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
@@ -142,10 +169,55 @@ export const ProfilePopover: React.FC<ProfilePopoverProps> = ({
     }
   };
 
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwError(null);
+    setPwSuccess(null);
+
+    if (!currentPassword) {
+      setPwError('Current password is required.');
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPwError('New password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPwError('New passwords do not match.');
+      return;
+    }
+
+    setPwBusy(true);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/auth/password`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPwError(data.error || data.message || 'Failed to change password.');
+        return;
+      }
+
+      setPwSuccess('Password updated.');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err: any) {
+      setPwError(err?.message || 'Network error while updating password.');
+    } finally {
+      setPwBusy(false);
+    }
+  };
+
   return (
     <div
       ref={popoverRef}
-      className="absolute bottom-16 left-3 right-3 z-40 bg-surface/95 backdrop-blur-xl border border-white/[0.1] rounded-2xl shadow-2xl p-4 space-y-4 select-none"
+      className="absolute bottom-16 left-3 right-3 z-40 bg-surface/95 backdrop-blur-xl border border-white/[0.1] rounded-2xl shadow-2xl p-4 space-y-3.5 select-none max-h-[80vh] overflow-y-auto"
     >
       {/* Profile Preview + Avatar Actions */}
       <div className="flex items-center space-x-3">
@@ -240,6 +312,86 @@ export const ProfilePopover: React.FC<ProfilePopoverProps> = ({
             );
           })}
         </div>
+      </div>
+
+      <div className="h-[1px] bg-white/[0.06]" />
+
+      {/* Collapsible Change Password Section */}
+      <div>
+        <button
+          type="button"
+          onClick={() => {
+            setIsPasswordOpen((prev) => !prev);
+            setPwError(null);
+            setPwSuccess(null);
+          }}
+          className="w-full flex items-center justify-between px-1.5 py-1 rounded-lg text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-card/50 transition-colors"
+        >
+          <span className="flex items-center space-x-2">
+            <KeyRound className="w-3.5 h-3.5 text-text-muted" />
+            <span>Change Password</span>
+          </span>
+          {isPasswordOpen ? (
+            <ChevronUp className="w-3.5 h-3.5 text-text-muted" />
+          ) : (
+            <ChevronDown className="w-3.5 h-3.5 text-text-muted" />
+          )}
+        </button>
+
+        {isPasswordOpen && (
+          <form onSubmit={handleChangePassword} className="mt-2.5 space-y-2 px-1">
+            {pwError && (
+              <div className="bg-danger-muted border border-danger/25 rounded-lg px-2.5 py-1.5 text-[11px] text-danger flex items-start space-x-1.5">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <span className="leading-snug">{pwError}</span>
+              </div>
+            )}
+
+            {pwSuccess && (
+              <div className="bg-online/10 border border-online/25 rounded-lg px-2.5 py-1.5 text-[11px] text-online flex items-center space-x-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>{pwSuccess}</span>
+              </div>
+            )}
+
+            <input
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              disabled={pwBusy}
+              placeholder="Current password"
+              className="w-full bg-input text-text-primary px-2.5 py-1.5 rounded-lg border border-white/[0.08] focus:border-accent focus:outline-none text-xs placeholder:text-text-muted/60"
+            />
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              disabled={pwBusy}
+              placeholder="New password (min 6 chars)"
+              className="w-full bg-input text-text-primary px-2.5 py-1.5 rounded-lg border border-white/[0.08] focus:border-accent focus:outline-none text-xs placeholder:text-text-muted/60"
+            />
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              disabled={pwBusy}
+              placeholder="Confirm new password"
+              className="w-full bg-input text-text-primary px-2.5 py-1.5 rounded-lg border border-white/[0.08] focus:border-accent focus:outline-none text-xs placeholder:text-text-muted/60"
+            />
+
+            <button
+              type="submit"
+              disabled={pwBusy || !currentPassword || !newPassword || !confirmPassword}
+              className="w-full py-1.5 rounded-lg bg-accent hover:bg-accent-hover disabled:opacity-50 text-white text-xs font-medium transition-colors flex items-center justify-center space-x-1.5"
+            >
+              {pwBusy ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <span>Update Password</span>
+              )}
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );

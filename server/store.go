@@ -54,13 +54,14 @@ type Friendship struct {
 }
 
 var (
-	ErrChannelExists     = errors.New("Channel already exists")
-	ErrChannelNotFound   = errors.New("Channel not found")
-	ErrChannelForbidden  = errors.New("Forbidden")
-	ErrChannelNotPrivate = errors.New("Channel is not private")
-	ErrUserNotFound      = errors.New("User not found")
-	ErrMessageNotFound   = errors.New("Message not found")
-	ErrMessageForbidden  = errors.New("Forbidden")
+	ErrChannelExists      = errors.New("Channel already exists")
+	ErrChannelNotFound    = errors.New("Channel not found")
+	ErrChannelForbidden   = errors.New("Forbidden")
+	ErrChannelNotPrivate  = errors.New("Channel is not private")
+	ErrUserNotFound       = errors.New("User not found")
+	ErrInvalidCredentials = errors.New("Invalid current password")
+	ErrMessageNotFound    = errors.New("Message not found")
+	ErrMessageForbidden   = errors.New("Forbidden")
 )
 
 // Channel represents a text or voice channel in the workspace.
@@ -156,6 +157,7 @@ type StoreData struct {
 type Store interface {
 	Register(username, password string) (*User, string, error)
 	Login(username, password string) (*User, string, error)
+	ChangePassword(username, currentPassword, newPassword string) error
 	AuthenticateToken(token string) (*User, error)
 	UserExists(username string) bool
 	SendFriendRequest(requester, receiver string) error
@@ -168,6 +170,8 @@ type Store interface {
 	EditMessage(msgID, room, requestingUser, newContent string) (*Message, error)
 	DeleteMessage(msgID, room, requestingUser string) error
 	ToggleReaction(msgID, room, username, emoji string) (*Message, error)
+	TogglePinMessage(msgID, room, requestingUser string) (*Message, error)
+	GetPinnedMessages(room string) ([]Message, error)
 	SearchMessages(room, query string, limit int) ([]Message, error)
 	GetChannels() ([]Channel, error)
 	GetChannel(id string) (*Channel, error)
@@ -437,6 +441,32 @@ func (s *FileStore) AuthenticateToken(token string) (*User, error) {
 	}
 
 	return user, nil
+}
+
+// ChangePassword verifies currentPassword and updates the user's password hash with a fresh salt.
+func (s *FileStore) ChangePassword(username, currentPassword, newPassword string) error {
+	if len(newPassword) < 6 {
+		return errors.New("New password must be at least 6 characters")
+	}
+
+	normUser := normalizeUsername(username)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, exists := s.data.Users[normUser]
+	if !exists {
+		return ErrUserNotFound
+	}
+	if !checkPassword(user.PasswordHash, currentPassword) {
+		return ErrInvalidCredentials
+	}
+
+	newHash, err := hashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+	user.PasswordHash = newHash
+	return s.saveLocked()
 }
 
 // UserExists checks if a username is registered.
@@ -800,6 +830,65 @@ func (s *FileStore) ToggleReaction(msgID, room, username, emoji string) (*Messag
 		}
 	}
 	return nil, ErrMessageNotFound
+}
+
+// togglePinInData toggles data["pinned"] and data["pinnedBy"] cleanly.
+func togglePinInData(data any, username string) map[string]any {
+	m := ensureDataMap(data)
+	currentlyPinned, _ := m["pinned"].(bool)
+	if currentlyPinned {
+		delete(m, "pinned")
+		delete(m, "pinnedBy")
+	} else {
+		m["pinned"] = true
+		m["pinnedBy"] = username
+	}
+	return m
+}
+
+func isMessagePinned(data any) bool {
+	if data == nil {
+		return false
+	}
+	if m, ok := data.(map[string]any); ok {
+		pinned, _ := m["pinned"].(bool)
+		return pinned
+	}
+	return false
+}
+
+// TogglePinMessage pins or unpins a message in a room.
+func (s *FileStore) TogglePinMessage(msgID, room, requestingUser string) (*Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Messages {
+		m := &s.data.Messages[i]
+		if m.ID == msgID && m.Room == room {
+			m.Data = togglePinInData(m.Data, requestingUser)
+			if err := s.saveLocked(); err != nil {
+				return nil, err
+			}
+			cp := *m
+			return &cp, nil
+		}
+	}
+	return nil, ErrMessageNotFound
+}
+
+// GetPinnedMessages returns all pinned messages for a room (newest first).
+func (s *FileStore) GetPinnedMessages(room string) ([]Message, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	res := make([]Message, 0)
+	for i := len(s.data.Messages) - 1; i >= 0; i-- {
+		m := s.data.Messages[i]
+		if m.Room == room && isMessagePinned(m.Data) {
+			res = append(res, m)
+		}
+	}
+	return res, nil
 }
 
 // SearchMessages performs a case-insensitive substring search in room messages.

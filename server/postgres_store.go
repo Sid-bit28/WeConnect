@@ -265,6 +265,43 @@ func (p *PostgresStore) AuthenticateToken(token string) (*User, error) {
 	return user, nil
 }
 
+func (p *PostgresStore) ChangePassword(username, currentPassword, newPassword string) error {
+	if len(newPassword) < 6 {
+		return errors.New("New password must be at least 6 characters")
+	}
+
+	normUser := normalizeUsername(username)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var currentHash string
+	err := p.pool.QueryRow(ctx,
+		`SELECT password_hash FROM users WHERE username = $1`,
+		normUser,
+	).Scan(&currentHash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrUserNotFound
+		}
+		return err
+	}
+
+	if !checkPassword(currentHash, currentPassword) {
+		return ErrInvalidCredentials
+	}
+
+	newHash, err := hashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	_, err = p.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $1 WHERE username = $2`,
+		newHash, normUser,
+	)
+	return err
+}
+
 func (p *PostgresStore) UserExists(username string) bool {
 	normUser := normalizeUsername(username)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -644,6 +681,80 @@ func (p *PostgresStore) ToggleReaction(msgID, room, username, emoji string) (*Me
 	}
 
 	return &m, nil
+}
+
+func (p *PostgresStore) TogglePinMessage(msgID, room, requestingUser string) (*Message, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var m Message
+	var dataBytes []byte
+	err := p.pool.QueryRow(ctx,
+		`SELECT COALESCE(msg_id, ''), type, room, sender, COALESCE(content, ''), data, timestamp
+		 FROM messages
+		 WHERE msg_id = $1 AND room = $2
+		 LIMIT 1`,
+		msgID, room,
+	).Scan(&m.ID, &m.Type, &m.Room, &m.Sender, &m.Content, &dataBytes, &m.Timestamp)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMessageNotFound
+		}
+		return nil, err
+	}
+
+	if len(dataBytes) > 0 {
+		_ = json.Unmarshal(dataBytes, &m.Data)
+	}
+	updatedMap := togglePinInData(m.Data, requestingUser)
+	m.Data = updatedMap
+
+	updatedDataBytes, err := json.Marshal(updatedMap)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = p.pool.Exec(ctx,
+		`UPDATE messages SET data = $1 WHERE msg_id = $2 AND room = $3`,
+		updatedDataBytes, msgID, room,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &m, nil
+}
+
+func (p *PostgresStore) GetPinnedMessages(room string) ([]Message, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT COALESCE(msg_id, ''), type, room, sender, COALESCE(content, ''), data, timestamp
+		 FROM messages
+		 WHERE room = $1 AND COALESCE((data->>'pinned')::boolean, FALSE) = TRUE
+		 ORDER BY timestamp DESC, id DESC
+		 LIMIT 50`,
+		room,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	res := make([]Message, 0)
+	for rows.Next() {
+		var m Message
+		var dataBytes []byte
+		if err := rows.Scan(&m.ID, &m.Type, &m.Room, &m.Sender, &m.Content, &dataBytes, &m.Timestamp); err != nil {
+			continue
+		}
+		if len(dataBytes) > 0 {
+			_ = json.Unmarshal(dataBytes, &m.Data)
+		}
+		res = append(res, m)
+	}
+	return res, nil
 }
 
 func (p *PostgresStore) SearchMessages(room, query string, limit int) ([]Message, error) {
