@@ -9,6 +9,7 @@ import { CreateChannelModal } from './components/CreateChannelModal';
 import { NotificationToast, type NotificationItem } from './components/NotificationToast';
 import { IncomingCallBanner, type IncomingCall } from './components/IncomingCallBanner';
 import { FloatingCallPiP } from './components/FloatingCallPiP';
+import { WeConnectLogo } from './components/WeConnectLogo';
 import { useSocket } from './hooks/useSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useAuth } from './hooks/useAuth';
@@ -798,10 +799,8 @@ export function App() {
   if (isLoading) {
     return (
       <div className="flex h-[100dvh] w-screen items-center justify-center bg-canvas text-text-primary select-none">
-        <div className="flex flex-col items-center space-y-3">
-          <div className="w-10 h-10 rounded-xl bg-accent/15 border border-accent/25 flex items-center justify-center">
-            <span className="text-accent font-bold text-base">W</span>
-          </div>
+        <div className="flex flex-col items-center space-y-4">
+          <WeConnectLogo size="xl" className="animate-pulse" />
           <div className="flex items-center space-x-2 text-xs font-medium text-text-secondary">
             <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
             <span>Loading WeConnect...</span>

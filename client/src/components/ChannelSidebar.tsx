@@ -16,6 +16,7 @@ import type { Channel, Friend, UserProfile } from '../types';
 import { getDmRoomId, isDmRoom } from '../utils/dm';
 import { UserAvatar } from './UserAvatar';
 import { ProfilePopover } from './ProfilePopover';
+import { WeConnectLogo } from './WeConnectLogo';
 
 interface ChannelSidebarProps {
   channels: Channel[];
@@ -121,14 +122,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
       >
         {/* Brand Header */}
         <div className="h-14 px-4 flex items-center justify-between border-b border-white/[0.06] flex-shrink-0">
-          <div className="flex items-center space-x-2.5 min-w-0">
-            <div className="w-7 h-7 rounded-lg bg-accent/15 border border-accent/25 flex items-center justify-center flex-shrink-0">
-              <span className="text-accent font-bold text-xs">W</span>
-            </div>
-            <span className="font-semibold text-sm text-text-primary tracking-tight truncate">
-              WeConnect
-            </span>
-          </div>
+          <WeConnectLogo size="sm" showText={true} />
 
           <div className="flex items-center space-x-2 flex-shrink-0">
             {/* Minimal Live Status Indicator */}

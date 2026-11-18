@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🌐 WeConnect
+<img src="./client/public/logo.svg" width="72" height="72" alt="WeConnect Logo" />
+
+# WeConnect
 
 ### *Next-Generation Real-Time Communication Platform*
 

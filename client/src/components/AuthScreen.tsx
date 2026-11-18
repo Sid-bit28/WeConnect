@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { AlertCircle, Loader2, ArrowRight } from 'lucide-react';
+import { WeConnectLogo } from './WeConnectLogo';
 
 interface AuthScreenProps {
   onLogin: (username: string, password: string) => Promise<boolean>;
@@ -62,10 +63,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       {/* Main Container */}
       <div className="relative w-full max-w-sm z-10">
         {/* Brand Header */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-accent/10 border border-accent/20 mb-3.5 shadow-sm">
-            <span className="text-accent font-bold text-lg tracking-tight">W</span>
-          </div>
+        <div className="flex flex-col items-center text-center mb-8">
+          <WeConnectLogo size="xl" className="mb-3.5" />
           <h1 className="text-xl font-semibold text-text-primary tracking-tight">
             WeConnect
           </h1>
