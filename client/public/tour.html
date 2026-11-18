@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WeConnect — Interactive Product Walkthrough</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            canvas: '#090B10',
+            surface: '#0F131C',
+            card: '#161B26',
+            accent: '#6366F1',
+            online: '#10B981',
+            danger: '#EF4444',
+            warning: '#F59E0B',
+          },
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @keyframes pulse-slow {
+      0%, 100% { transform: scale(1); opacity: 0.8; }
+      50% { transform: scale(1.03); opacity: 1; }
+    }
+    .animate-pulse-glow { animation: pulse-slow 3s infinite ease-in-out; }
+    .glass-panel {
+      background: rgba(15, 19, 28, 0.75);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+  </style>
+</head>
+<body class="bg-canvas text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-indigo-500/30 selection:text-indigo-200 overflow-x-hidden">
+
+  <!-- Top Navigation Bar -->
+  <header class="h-16 border-b border-white/[0.08] px-6 flex items-center justify-between glass-panel sticky top-0 z-50">
+    <div class="flex items-center space-x-3">
+      <div class="w-8 h-8 rounded-xl bg-gradient-to-b from-white/10 to-white/5 border border-white/10 flex items-center justify-center shadow">
+        <svg width="22" height="22" viewBox="0 0 48 48" fill="none">
+          <path d="M10 15L17.2 33.2C17.7 34.5 19.3 35.1 20.6 34.5C21.1 34.2 21.5 33.8 21.8 33.2L24 27.5L26.2 33.2C26.7 34.5 28.3 35.1 29.6 34.5C30.1 34.2 30.5 33.8 30.8 33.2L38 15" stroke="#6366F1" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="10" cy="15" r="3" fill="#818CF8" />
+          <circle cx="38" cy="15" r="3" fill="#06B6D4" />
+          <circle cx="24" cy="21" r="2.5" fill="#10B981" />
+        </svg>
+      </div>
+      <div>
+        <span class="font-bold text-sm tracking-tight">WeConnect</span>
+        <span class="ml-2 text-[10px] font-mono uppercase bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded border border-indigo-500/30">Interactive Tour</span>
+      </div>
+    </div>
+
+    <div class="flex items-center space-x-3">
+      <a href="/" class="text-xs text-slate-400 hover:text-white transition-colors px-3 py-1.5 rounded-lg hover:bg-white/5">Open Live App</a>
+      <a href="https://github.com/Sid-bit28/WeConnect" target="_blank" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3.5 py-1.5 rounded-lg transition-colors flex items-center space-x-1.5 shadow-lg shadow-indigo-600/20">
+        <span>GitHub Repository</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- Hero & Video Stage -->
+  <main class="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-8 flex flex-col items-center">
+    
+    <div class="text-center max-w-2xl mb-8">
+      <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
+        Experience WeConnect in 90 Seconds
+      </h1>
+      <p class="mt-2.5 text-sm sm:text-base text-slate-400">
+        Sub-millisecond WebSockets, multi-track WebRTC calling, tab-audio screen sharing, and in-app floating PiP.
+      </p>
+    </div>
+
+    <!-- Interactive Interactive Simulation Showcase -->
+    <div class="w-full glass-panel rounded-2xl overflow-hidden shadow-2xl border border-white/[0.1] relative">
+      <!-- Window Titlebar -->
+      <div class="h-10 bg-slate-900/90 border-b border-white/[0.06] px-4 flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <div class="w-3 h-3 rounded-full bg-rose-500/80"></div>
+          <div class="w-3 h-3 rounded-full bg-amber-500/80"></div>
+          <div class="w-3 h-3 rounded-full bg-emerald-500/80"></div>
+          <span class="text-xs text-slate-400 font-mono ml-2">weconnect-dgw2.onrender.com</span>
+        </div>
+        <div class="flex items-center space-x-3 text-xs text-slate-400">
+          <span id="scene-counter" class="font-mono text-indigo-400 font-medium">Stage 1 of 5</span>
+        </div>
+      </div>
+
+      <!-- Main Stage Container -->
+      <div class="aspect-video w-full bg-slate-950 relative flex items-center justify-center overflow-hidden p-6 sm:p-12" id="stage-viewport">
+        
+        <!-- Scene 1: Simultaneous Video & Screen Share with Audio -->
+        <div class="scene-item w-full h-full flex flex-col justify-between transition-all duration-500" id="scene-1">
+          <div class="flex items-center justify-between pb-4 border-b border-white/5">
+            <div class="flex items-center space-x-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span class="font-semibold text-sm"># Voice Lounge · Live 1080p Screen Stream</span>
+            </div>
+            <span class="text-xs font-mono bg-emerald-500/10 text-emerald-300 px-2.5 py-1 rounded-full border border-emerald-500/30">· Audio On (Stereo 48kHz)</span>
+          </div>
+
+          <div class="flex-1 py-4 grid grid-cols-1 md:grid-cols-4 gap-4 min-h-0">
+            <!-- Screen Share Big Stage -->
+            <div class="md:col-span-3 rounded-xl bg-slate-900 border border-indigo-500/30 relative overflow-hidden flex flex-col items-center justify-center group shadow-xl">
+              <div class="absolute inset-0 bg-gradient-to-tr from-indigo-950/30 to-cyan-950/20 pointer-events-none"></div>
+              <div class="text-center p-6 relative z-10">
+                <div class="w-14 h-14 rounded-2xl bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 flex items-center justify-center mx-auto mb-3 shadow-lg animate-pulse-glow">
+                  <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                  </svg>
+                </div>
+                <h3 class="font-bold text-base text-slate-100">Live Stage Presenter: siddarth</h3>
+                <p class="text-xs text-slate-400 mt-1 max-w-sm">Sharing 1080p 60fps Brave Tab with synchronized internal audio & low-latency Opus WebRTC mesh.</p>
+              </div>
+              <div class="absolute top-3 left-3 bg-black/60 backdrop-blur px-2.5 py-1 rounded-md text-[11px] text-emerald-400 font-mono flex items-center space-x-1.5 border border-emerald-500/30">
+                <span>🔊 Tab Audio Active</span>
+              </div>
+            </div>
+
+            <!-- Participant Webcams Sidebar -->
+            <div class="flex flex-col space-y-3">
+              <div class="flex-1 rounded-xl bg-slate-900/80 border border-emerald-500/60 ring-2 ring-emerald-500/40 p-3 flex flex-col items-center justify-center relative shadow-lg">
+                <div class="w-10 h-10 rounded-full bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 font-bold flex items-center justify-center text-sm mb-1">
+                  S
+                </div>
+                <span class="text-xs font-semibold">siddarth (You)</span>
+                <span class="text-[10px] text-emerald-400 font-medium">Speaking...</span>
+              </div>
+
+              <div class="flex-1 rounded-xl bg-slate-900/60 border border-white/5 p-3 flex flex-col items-center justify-center relative">
+                <div class="w-10 h-10 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold flex items-center justify-center text-sm mb-1">
+                  A
+                </div>
+                <span class="text-xs font-semibold">alice</span>
+                <span class="text-[10px] text-slate-500">Muted</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Stage Call Controls Dock -->
+          <div class="h-12 bg-slate-900/90 rounded-xl border border-white/10 px-4 flex items-center justify-between">
+            <div class="flex items-center space-x-2 text-xs text-slate-400 font-mono">
+              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span>WebRTC Mesh: 2.1ms RTT</span>
+            </div>
+            <div class="flex items-center space-x-2">
+              <button class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-xs">🎙️</button>
+              <button class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-xs">📹</button>
+              <button class="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center text-xs font-semibold px-3">Sharing</button>
+              <button class="w-8 h-8 rounded-lg bg-rose-600 text-white flex items-center justify-center text-xs">📞</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scene 2: Floating In-App PiP Player -->
+        <div class="scene-item w-full h-full hidden flex flex-col justify-between transition-all duration-500" id="scene-2">
+          <div class="flex items-center justify-between pb-3 border-b border-white/5">
+            <span class="font-semibold text-sm">Multitask with In-App Floating Picture-in-Picture (PiP)</span>
+            <span class="text-xs font-mono text-indigo-400">Background Voice Sinks Active</span>
+          </div>
+
+          <div class="flex-1 py-4 relative flex items-center justify-center">
+            <!-- Background Chat Simulation -->
+            <div class="w-full h-full bg-slate-900/40 rounded-xl border border-white/5 p-4 flex flex-col justify-between opacity-50 blur-[1px]">
+              <div class="space-y-3">
+                <div class="flex items-start space-x-3">
+                  <div class="w-7 h-7 rounded-full bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-xs">S</div>
+                  <div>
+                    <div class="text-xs font-bold text-indigo-400">siddarth <span class="text-[10px] text-slate-500">12:08 AM</span></div>
+                    <div class="text-xs text-slate-300">I dropped the updated API docs in the channel!</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Draggable Floating PiP Tile -->
+            <div class="absolute right-6 top-6 w-64 aspect-video rounded-xl border border-indigo-500/50 bg-slate-900 shadow-2xl p-3 flex flex-col justify-between group animate-pulse-glow">
+              <div class="flex items-center justify-between text-[11px]">
+                <div class="flex items-center space-x-1.5 font-medium">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span class="text-white">Voice Lounge (Call)</span>
+                </div>
+                <span class="text-[10px] text-indigo-400 font-mono">PiP Dock</span>
+              </div>
+              <div class="text-center py-2">
+                <div class="text-xs font-semibold text-slate-200">siddarth's Screen</div>
+                <div class="text-[10px] text-emerald-400 mt-0.5">· Audio On · Live</div>
+              </div>
+              <div class="flex items-center justify-between pt-1 border-t border-white/10 text-[10px]">
+                <span class="text-slate-400">Drag to move</span>
+                <span class="text-indigo-300 hover:underline cursor-pointer">Click to expand ↗</span>
+              </div>
+            </div>
+          </div>
+
+          <p class="text-xs text-center text-slate-400">Keep talking and listening seamlessly while browsing channels, sending files, or reviewing code.</p>
+        </div>
+
+        <!-- Scene 3: Rich Multimedia Chat & Reactions -->
+        <div class="scene-item w-full h-full hidden flex flex-col justify-between transition-all duration-500" id="scene-3">
+          <div class="flex items-center justify-between pb-3 border-b border-white/5">
+            <span class="font-semibold text-sm"># Random · Rich Markdown, Giphy & Emoji Reactions</span>
+            <span class="text-xs font-mono text-emerald-400">PostgreSQL JSONB Reactions</span>
+          </div>
+
+          <div class="flex-1 py-4 space-y-3">
+            <div class="flex items-start space-x-3 p-2 rounded-lg bg-white/[0.02]">
+              <div class="w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center text-xs font-bold">T</div>
+              <div class="flex-1">
+                <div class="flex items-baseline space-x-2">
+                  <span class="font-semibold text-xs text-slate-200">testuser</span>
+                  <span class="text-[10px] text-slate-500">11:31 PM</span>
+                </div>
+                <div class="text-xs text-slate-300 mt-0.5">Did anyone test the new video calling screen audio feature?</div>
+              </div>
+            </div>
+
+            <div class="flex items-start space-x-3 p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+              <div class="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-xs font-bold">S</div>
+              <div class="flex-1">
+                <div class="flex items-baseline space-x-2">
+                  <span class="font-semibold text-xs text-indigo-400">siddarth</span>
+                  <span class="text-[10px] text-slate-500">12:09 AM</span>
+                </div>
+                <div class="text-xs text-slate-200 mt-0.5">Yes! Screen tab audio streams in crisp stereo. Zero lag!</div>
+                <div class="flex items-center space-x-2 mt-2">
+                  <span class="bg-indigo-950/80 border border-indigo-500/40 text-indigo-300 text-[11px] px-2.5 py-0.5 rounded-full flex items-center space-x-1">
+                    <span>🔥</span>
+                    <span class="font-bold">4</span>
+                  </span>
+                  <span class="bg-indigo-950/80 border border-indigo-500/40 text-indigo-300 text-[11px] px-2.5 py-0.5 rounded-full flex items-center space-x-1">
+                    <span>🚀</span>
+                    <span class="font-bold">2</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="h-10 bg-slate-900 rounded-lg border border-white/10 px-3 flex items-center justify-between text-xs text-slate-400">
+            <span>Message #Random...</span>
+            <div class="flex items-center space-x-2">
+              <span>📎</span>
+              <span>😀</span>
+              <span class="bg-indigo-600 text-white px-2.5 py-0.5 rounded text-[11px] font-semibold">Send</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scene 4: Direct Messaging & Live Call Ringing -->
+        <div class="scene-item w-full h-full hidden flex flex-col justify-between transition-all duration-500" id="scene-4">
+          <div class="flex items-center justify-between pb-3 border-b border-white/5">
+            <span class="font-semibold text-sm">Direct Messaging · Read Receipts & Call Ringing Alerts</span>
+            <span class="text-xs font-mono text-indigo-400">1-to-1 End-to-End Handshake</span>
+          </div>
+
+          <div class="flex-1 flex items-center justify-center">
+            <!-- Incoming Call Modal Simulation -->
+            <div class="w-80 rounded-2xl bg-slate-900 border border-indigo-500/40 shadow-2xl p-6 text-center animate-pulse-glow">
+              <div class="w-16 h-16 rounded-full bg-indigo-500/20 border-2 border-indigo-500 text-indigo-300 text-xl font-bold flex items-center justify-center mx-auto mb-3 shadow-lg">
+                A
+              </div>
+              <h4 class="font-bold text-base text-white">Incoming Call...</h4>
+              <p class="text-xs text-slate-400 mt-0.5">alice is calling you in Direct Messages</p>
+              
+              <div class="flex items-center justify-center space-x-4 mt-5">
+                <button class="bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs px-4 py-2 rounded-xl transition-colors">
+                  Decline
+                </button>
+                <button class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs px-5 py-2 rounded-xl transition-colors flex items-center space-x-1.5 shadow-lg shadow-emerald-600/30">
+                  <span>Accept Call</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <p class="text-xs text-center text-slate-400">Real-time push alerts ring whenever a peer initiates a call from their Direct Messages.</p>
+        </div>
+
+        <!-- Scene 5: Architectural Excellence -->
+        <div class="scene-item w-full h-full hidden flex flex-col justify-between transition-all duration-500" id="scene-5">
+          <div class="flex items-center justify-between pb-3 border-b border-white/5">
+            <span class="font-semibold text-sm">Built with Modern Engineering Principles</span>
+            <span class="text-xs font-mono text-emerald-400">Zero Bloat · High Concurrency</span>
+          </div>
+
+          <div class="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-4 items-center py-4">
+            <div class="p-4 rounded-xl bg-slate-900/80 border border-white/5 text-center">
+              <div class="text-2xl font-black text-indigo-400 font-mono">~28 MB</div>
+              <div class="text-xs font-semibold text-slate-200 mt-1">Alpine Docker Image</div>
+              <div class="text-[11px] text-slate-500 mt-1">Multi-stage build compiles full Go + React SPA</div>
+            </div>
+
+            <div class="p-4 rounded-xl bg-slate-900/80 border border-white/5 text-center">
+              <div class="text-2xl font-black text-emerald-400 font-mono">&lt; 20 MB</div>
+              <div class="text-xs font-semibold text-slate-200 mt-1">Backend RAM Usage</div>
+              <div class="text-[11px] text-slate-500 mt-1">Go 1.23 goroutines with zero memory leaks</div>
+            </div>
+
+            <div class="p-4 rounded-xl bg-slate-900/80 border border-white/5 text-center">
+              <div class="text-2xl font-black text-cyan-400 font-mono">&lt; 2 ms</div>
+              <div class="text-xs font-semibold text-slate-200 mt-1">Signaling Latency</div>
+              <div class="text-[11px] text-slate-500 mt-1">Non-blocking 256-frame WebSocket ring buffer</div>
+            </div>
+          </div>
+
+          <div class="text-center">
+            <a href="https://weconnect-dgw2.onrender.com" target="_blank" class="inline-flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-lg shadow-indigo-600/30 transition-all transform hover:scale-105">
+              <span>Launch Live Deployment Now</span>
+              <span>→</span>
+            </a>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Stage Controller Bar -->
+      <div class="h-14 bg-slate-900/90 border-t border-white/[0.06] px-6 flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <button id="btn-prev" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors">← Prev</button>
+          <button id="btn-next" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-medium text-white transition-colors">Next Stage →</button>
+        </div>
+
+        <!-- Dot Indicators -->
+        <div class="flex items-center space-x-2" id="dots-container">
+          <button class="w-2.5 h-2.5 rounded-full bg-indigo-500 transition-all" onclick="goToScene(1)"></button>
+          <button class="w-2.5 h-2.5 rounded-full bg-slate-700 transition-all" onclick="goToScene(2)"></button>
+          <button class="w-2.5 h-2.5 rounded-full bg-slate-700 transition-all" onclick="goToScene(3)"></button>
+          <button class="w-2.5 h-2.5 rounded-full bg-slate-700 transition-all" onclick="goToScene(4)"></button>
+          <button class="w-2.5 h-2.5 rounded-full bg-slate-700 transition-all" onclick="goToScene(5)"></button>
+        </div>
+
+        <div class="flex items-center space-x-2 text-xs font-mono text-slate-400">
+          <button id="btn-autoplay" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px]">Auto-Play: ON</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Video Recording Storyboard for Portfolio Walkthrough -->
+    <section class="w-full mt-12 glass-panel rounded-2xl p-6 sm:p-8 border border-white/[0.08]">
+      <div class="flex items-center space-x-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center font-bold text-base">
+          📹
+        </div>
+        <div>
+          <h2 class="text-xl font-bold text-white tracking-tight">Walkthrough Video Recording Storyboard</h2>
+          <p class="text-xs text-slate-400 mt-0.5">Use this exact 90-second script to record your professional demo with OBS, Loom, or Chrome Screen Recorder.</p>
+        </div>
+      </div>
+
+      <div class="space-y-4 text-xs font-sans">
+        <div class="p-3.5 rounded-xl bg-slate-900/60 border border-white/5 flex items-start space-x-4">
+          <span class="font-mono text-indigo-400 font-bold w-16 flex-shrink-0 pt-0.5">0:00 - 0:15</span>
+          <div>
+            <div class="font-semibold text-slate-200">Intro & Fast Auth</div>
+            <div class="text-slate-400 mt-0.5">Show the clean Obsidian login screen. Register or log in as <code>siddarth</code>. Highlight the instant zero-delay authentication and channel sidebar.</div>
+          </div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-900/60 border border-white/5 flex items-start space-x-4">
+          <span class="font-mono text-indigo-400 font-bold w-16 flex-shrink-0 pt-0.5">0:15 - 0:35</span>
+          <div>
+            <div class="font-semibold text-slate-200">Rich Real-Time Messaging</div>
+            <div class="text-slate-400 mt-0.5">Type in <code>#Random</code>. Send a code block with markdown. Show live typing indicators, hover quick emoji reactions (🔥 👍), and threaded replies.</div>
+          </div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-900/60 border border-white/5 flex items-start space-x-4">
+          <span class="font-mono text-indigo-400 font-bold w-16 flex-shrink-0 pt-0.5">0:35 - 0:60</span>
+          <div>
+            <div class="font-semibold text-slate-200">1080p Video Calling & Screen Share with Tab Audio</div>
+            <div class="text-slate-400 mt-0.5">Click <strong>Join Call</strong> in <code>🔊 Voice Lounge</code>. Turn on webcam, then click <strong>Screen Share</strong> → select a browser tab with a video/music playing → toggle <strong>Share with tab audio</strong> ON. Highlight the green <code>· Audio On</code> badge!</div>
+          </div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-900/60 border border-white/5 flex items-start space-x-4">
+          <span class="font-mono text-indigo-400 font-bold w-16 flex-shrink-0 pt-0.5">0:60 - 0:75</span>
+          <div>
+            <div class="font-semibold text-slate-200">In-App Floating Picture-in-Picture Mini-Player</div>
+            <div class="text-slate-400 mt-0.5">Click <strong>Back to Chat</strong> while remaining in the call. The video shrinks into the floating draggable PiP mini-player in the bottom corner while sound keeps playing!</div>
+          </div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-900/60 border border-white/5 flex items-start space-x-4">
+          <span class="font-mono text-indigo-400 font-bold w-16 flex-shrink-0 pt-0.5">0:75 - 0:90</span>
+          <div>
+            <div class="font-semibold text-slate-200">Direct Messages, Call Ringing & Outro</div>
+            <div class="text-slate-400 mt-0.5">Switch to Direct Messages, show read receipts (<code>Seen</code>), and trigger a call alert chime. Conclude with a quick mention of Go 1.23, Neon PostgreSQL, and 28MB Alpine Docker.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Interactive JavaScript Engine -->
+  <script>
+    let currentScene = 1;
+    const totalScenes = 5;
+    let autoPlay = true;
+    let autoPlayTimer = null;
+
+    function goToScene(index) {
+      currentScene = index;
+      for (let i = 1; i <= totalScenes; i++) {
+        const sceneEl = document.getElementById(`scene-${i}`);
+        if (sceneEl) {
+          if (i === currentScene) {
+            sceneEl.classList.remove('hidden');
+          } else {
+            sceneEl.classList.add('hidden');
+          }
+        }
+      }
+
+      document.getElementById('scene-counter').innerText = `Stage ${currentScene} of ${totalScenes}`;
+
+      // Update dots
+      const dots = document.getElementById('dots-container').children;
+      for (let i = 0; i < dots.length; i++) {
+        if (i + 1 === currentScene) {
+          dots[i].className = 'w-6 h-2.5 rounded-full bg-indigo-500 transition-all';
+        } else {
+          dots[i].className = 'w-2.5 h-2.5 rounded-full bg-slate-700 hover:bg-slate-600 transition-all';
+        }
+      }
+    }
+
+    function nextScene() {
+      const next = currentScene >= totalScenes ? 1 : currentScene + 1;
+      goToScene(next);
+    }
+
+    function prevScene() {
+      const prev = currentScene <= 1 ? totalScenes : currentScene - 1;
+      goToScene(prev);
+    }
+
+    document.getElementById('btn-next').addEventListener('click', () => {
+      nextScene();
+      restartAutoPlay();
+    });
+
+    document.getElementById('btn-prev').addEventListener('click', () => {
+      prevScene();
+      restartAutoPlay();
+    });
+
+    const autoPlayBtn = document.getElementById('btn-autoplay');
+    autoPlayBtn.addEventListener('click', () => {
+      autoPlay = !autoPlay;
+      autoPlayBtn.innerText = `Auto-Play: ${autoPlay ? 'ON' : 'OFF'}`;
+      if (autoPlay) startAutoPlay();
+      else stopAutoPlay();
+    });
+
+    function startAutoPlay() {
+      stopAutoPlay();
+      autoPlayTimer = setInterval(nextScene, 4500);
+    }
+
+    function stopAutoPlay() {
+      if (autoPlayTimer) clearInterval(autoPlayTimer);
+    }
+
+    function restartAutoPlay() {
+      if (autoPlay) startAutoPlay();
+    }
+
+    goToScene(1);
+    startAutoPlay();
+  </script>
+</body>
+</html>
