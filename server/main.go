@@ -964,6 +964,7 @@ func reactMessageHandler(store Store, hub *Hub) http.HandlerFunc {
 
 		updated, err := store.ToggleReaction(id, room, user.Username, emoji)
 		if err != nil {
+			log.Printf("[React] Error toggling reaction id='%s' room='%s' user='%s' emoji='%s': %v", id, room, user.Username, emoji, err)
 			if errors.Is(err, ErrMessageNotFound) {
 				writeError(w, http.StatusNotFound, "Message not found")
 			} else {

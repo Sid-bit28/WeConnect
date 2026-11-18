@@ -675,6 +675,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     });
   };
 
+  const formatCompactTime = (timestamp?: number) => {
+    if (!timestamp) return '';
+    const d = new Date(timestamp);
+    const hours = d.getHours();
+    const minutes = d.getMinutes().toString().padStart(2, '0');
+    return `${hours % 12 || 12}:${minutes}`;
+  };
+
   const invitableFriends = friends.filter(
     (f) => !channelMembers.some((m) => m.toLowerCase() === f.username.toLowerCase())
   );
@@ -1559,16 +1567,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     key={msgKey}
                     ref={attachRef}
                     className={clsx(
-                      'flex items-baseline pl-[44px] pr-3 py-0.5 -mx-2 rounded-lg transition-colors group relative',
+                      'flex items-start space-x-3 py-0.5 px-2 -mx-2 rounded-lg transition-colors group relative',
                       isHighlighted
                         ? 'bg-accent/15 ring-1 ring-accent/40'
                         : 'hover:bg-surface/60'
                     )}
                   >
                     {renderHoverActions(msg, isSelf)}
-                    <span className="absolute left-2 top-1 text-[10px] text-text-muted opacity-0 group-hover:opacity-100 transition-opacity select-none w-8 text-right">
-                      {formatTimestamp(msg.timestamp)}
-                    </span>
+                    <div className="w-8 flex-shrink-0 flex items-center justify-end select-none pr-0.5 pt-0.5">
+                      <span className="text-[10px] font-mono text-text-muted/70 opacity-0 group-hover:opacity-100 transition-opacity select-none whitespace-nowrap tabular-nums leading-none">
+                        {formatCompactTime(msg.timestamp)}
+                      </span>
+                    </div>
                     <div className="flex-1 min-w-0">
                       {renderMessageRichBody(msg, true)}
                       {showSeen && (

@@ -504,14 +504,16 @@ func (p *PostgresStore) SaveMessage(msg Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var dataBytes []byte
+	var dataParam any
 	if msg.Data != nil {
-		dataBytes, _ = json.Marshal(msg.Data)
+		if b, err := json.Marshal(msg.Data); err == nil {
+			dataParam = string(b)
+		}
 	}
 
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO messages (msg_id, type, room, sender, content, data, timestamp) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		msg.ID, msg.Type, msg.Room, msg.Sender, msg.Content, dataBytes, msg.Timestamp,
+		`INSERT INTO messages (msg_id, type, room, sender, content, data, timestamp) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+		msg.ID, msg.Type, msg.Room, msg.Sender, msg.Content, dataParam, msg.Timestamp,
 	)
 	return err
 }
@@ -595,14 +597,16 @@ func (p *PostgresStore) EditMessage(msgID, room, requestingUser, newContent stri
 	m.Content = trimmed
 	m.Data = dataMap
 
-	updatedDataBytes, err := json.Marshal(dataMap)
-	if err != nil {
-		return nil, err
+	var dataParam any
+	if dataMap != nil {
+		if b, err := json.Marshal(dataMap); err == nil {
+			dataParam = string(b)
+		}
 	}
 
 	_, err = p.pool.Exec(ctx,
-		`UPDATE messages SET content = $1, data = $2 WHERE msg_id = $3 AND room = $4`,
-		m.Content, updatedDataBytes, msgID, room,
+		`UPDATE messages SET content = $1, data = $2::jsonb WHERE msg_id = $3 AND room = $4`,
+		m.Content, dataParam, msgID, room,
 	)
 	if err != nil {
 		return nil, err
@@ -670,14 +674,20 @@ func (p *PostgresStore) ToggleReaction(msgID, room, username, emoji string) (*Me
 	updatedMap := toggleReactionInData(m.Data, username, emoji)
 	m.Data = updatedMap
 
-	updatedDataBytes, err := json.Marshal(updatedMap)
-	if err != nil {
-		return nil, err
+	var dataParam any
+	if updatedMap == nil || len(updatedMap) == 0 {
+		dataParam = nil
+	} else {
+		b, err := json.Marshal(updatedMap)
+		if err != nil {
+			return nil, err
+		}
+		dataParam = string(b)
 	}
 
 	_, err = p.pool.Exec(ctx,
-		`UPDATE messages SET data = $1 WHERE msg_id = $2 AND room = $3`,
-		updatedDataBytes, msgID, room,
+		`UPDATE messages SET data = $1::jsonb WHERE msg_id = $2 AND room = $3`,
+		dataParam, msgID, room,
 	)
 	if err != nil {
 		return nil, err
@@ -712,14 +722,20 @@ func (p *PostgresStore) TogglePinMessage(msgID, room, requestingUser string) (*M
 	updatedMap := togglePinInData(m.Data, requestingUser)
 	m.Data = updatedMap
 
-	updatedDataBytes, err := json.Marshal(updatedMap)
-	if err != nil {
-		return nil, err
+	var pinDataParam any
+	if updatedMap == nil || len(updatedMap) == 0 {
+		pinDataParam = nil
+	} else {
+		b, err := json.Marshal(updatedMap)
+		if err != nil {
+			return nil, err
+		}
+		pinDataParam = string(b)
 	}
 
 	_, err = p.pool.Exec(ctx,
-		`UPDATE messages SET data = $1 WHERE msg_id = $2 AND room = $3`,
-		updatedDataBytes, msgID, room,
+		`UPDATE messages SET data = $1::jsonb WHERE msg_id = $2 AND room = $3`,
+		pinDataParam, msgID, room,
 	)
 	if err != nil {
 		return nil, err
@@ -891,8 +907,8 @@ func (p *PostgresStore) CreateChannel(ch Channel) error {
 
 	_, err := p.pool.Exec(ctx,
 		`INSERT INTO channels (id, name, type, topic, created_by, is_private, members, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		ch.ID, ch.Name, ch.Type, ch.Topic, ch.CreatedBy, ch.IsPrivate, membersBytes, ch.CreatedAt,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+		ch.ID, ch.Name, ch.Type, ch.Topic, ch.CreatedBy, ch.IsPrivate, string(membersBytes), ch.CreatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -928,8 +944,8 @@ func (p *PostgresStore) InviteToChannel(channelID, requestingUser, targetUser st
 	defer cancel()
 
 	_, err = p.pool.Exec(ctx,
-		`UPDATE channels SET members = $1 WHERE id = $2`,
-		membersBytes, normID,
+		`UPDATE channels SET members = $1::jsonb WHERE id = $2`,
+		string(membersBytes), normID,
 	)
 	if err != nil {
 		return nil, err
