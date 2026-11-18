@@ -43,6 +43,7 @@ export function useWebRTC({
   const screenCandidateQueue = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const remoteWebcamMap = useRef<Map<string, MediaStream>>(new Map());
   const remoteScreenMap = useRef<Map<string, MediaStream>>(new Map());
+  const peerMediaStates = useRef<Map<string, { isAudioMuted: boolean; isVideoOff: boolean }>>(new Map());
   const isInCallRef = useRef<boolean>(false);
   const isAudioMutedRef = useRef<boolean>(false);
   const isVideoOffRef = useRef<boolean>(false);
@@ -134,13 +135,16 @@ export function useWebRTC({
 
   const updatePeersState = useCallback(() => {
     const list: PeerStream[] = [];
-    // Add remote webcams
+    // Add remote webcams with synchronized mute/video states
     remoteWebcamMap.current.forEach((stream, peerId) => {
+      const media = peerMediaStates.current.get(peerId);
       list.push({
         peerId,
         username: peerId,
         stream,
         isScreen: false,
+        isAudioMuted: media?.isAudioMuted || false,
+        isVideoOff: media?.isVideoOff || false,
       });
     });
     // Add remote screens
@@ -167,6 +171,7 @@ export function useWebRTC({
     }
     candidateQueue.current.delete(peerId);
     remoteWebcamMap.current.delete(peerId);
+    peerMediaStates.current.delete(peerId);
 
     // Close screen connection if any
     const screenPc = screenPeerConnections.current.get(peerId);
@@ -486,6 +491,10 @@ export function useWebRTC({
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           sendSignal(msg.sender, 'offer', offer);
+          sendSignal(msg.sender, 'media-state', {
+            isAudioMuted: isAudioMutedRef.current,
+            isVideoOff: isVideoOffRef.current,
+          });
 
           // If currently sharing screen, send ALL screen tracks (video + audio) to the new peer
           const activeScreenStream = localScreenStreamRef.current;
@@ -537,6 +546,10 @@ export function useWebRTC({
               const offer = await pc.createOffer();
               await pc.setLocalDescription(offer);
               sendSignal(peerId, 'offer', offer);
+              sendSignal(peerId, 'media-state', {
+                isAudioMuted: isAudioMutedRef.current,
+                isVideoOff: isVideoOffRef.current,
+              });
 
               // If currently sharing screen, send ALL screen tracks (video + audio)
               const activeScreenStream = localScreenStreamRef.current;
@@ -574,6 +587,10 @@ export function useWebRTC({
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             sendSignal(peerId, 'answer', answer);
+            sendSignal(peerId, 'media-state', {
+              isAudioMuted: isAudioMutedRef.current,
+              isVideoOff: isVideoOffRef.current,
+            });
           } catch (err) {
             console.error('Failed to handle incoming offer:', err);
           }
@@ -699,6 +716,20 @@ export function useWebRTC({
           break;
         }
 
+        case 'media-state': {
+          if (!payload) return;
+          const current = peerMediaStates.current.get(peerId) || { isAudioMuted: false, isVideoOff: false };
+          if (typeof payload.isAudioMuted === 'boolean') {
+            current.isAudioMuted = payload.isAudioMuted;
+          }
+          if (typeof payload.isVideoOff === 'boolean') {
+            current.isVideoOff = payload.isVideoOff;
+          }
+          peerMediaStates.current.set(peerId, current);
+          updatePeersState();
+          break;
+        }
+
         case 'leave-call': {
           closePeer(peerId);
           break;
@@ -729,20 +760,97 @@ export function useWebRTC({
       track.enabled = !nextMuted;
     });
     setIsAudioMuted(nextMuted);
-  }, [isAudioMuted]);
 
-  // Video Toggle
-  const toggleVideo = useCallback(() => {
-    if (!localStreamRef.current) return;
-    const videoTracks = localStreamRef.current.getVideoTracks();
-    if (videoTracks.length === 0) return;
+    peerConnections.current.forEach((_, peerId) => {
+      sendSignal(peerId, 'media-state', {
+        isAudioMuted: nextMuted,
+        isVideoOff: isVideoOffRef.current,
+      });
+    });
+  }, [isAudioMuted, sendSignal]);
+
+  // Video Toggle (Handles live toggle and fresh track re-acquisition if previously stopped)
+  const toggleVideo = useCallback(async () => {
+    if (!isInCallRef.current) return;
 
     const nextOff = !isVideoOff;
-    videoTracks.forEach((track) => {
-      track.enabled = !nextOff;
+    const currentStream = localStreamRef.current;
+
+    if (nextOff) {
+      // Turn camera off: disable active video tracks
+      if (currentStream) {
+        currentStream.getVideoTracks().forEach((track) => {
+          track.enabled = false;
+        });
+      }
+      setIsVideoOff(true);
+      peerConnections.current.forEach((_, peerId) => {
+        sendSignal(peerId, 'media-state', {
+          isVideoOff: true,
+          isAudioMuted: isAudioMutedRef.current,
+        });
+      });
+      return;
+    }
+
+    // Turn camera on: re-enable existing track or acquire fresh video track if stopped/missing
+    let activeVideoTrack = currentStream?.getVideoTracks().find((t) => t.readyState === 'live');
+
+    if (!activeVideoTrack) {
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+        try {
+          const constraints: MediaStreamConstraints = {
+            video: selectedVideoDeviceId ? { deviceId: { exact: selectedVideoDeviceId } } : true,
+            audio: false,
+          };
+          const freshStream = await navigator.mediaDevices.getUserMedia(constraints);
+          const freshTrack = freshStream.getVideoTracks()[0];
+          if (freshTrack) {
+            activeVideoTrack = freshTrack;
+            if (currentStream) {
+              currentStream.getVideoTracks().forEach((oldT) => {
+                oldT.stop();
+                currentStream.removeTrack(oldT);
+              });
+              currentStream.addTrack(freshTrack);
+            } else {
+              const newStream = new MediaStream([freshTrack]);
+              localStreamRef.current = newStream;
+              setLocalStream(newStream);
+            }
+
+            // Replace track on all existing camera peer connections
+            peerConnections.current.forEach((pc) => {
+              const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+              if (sender) {
+                sender.replaceTrack(freshTrack).catch(() => {});
+              } else {
+                try {
+                  pc.addTrack(freshTrack, localStreamRef.current!);
+                } catch (_) {}
+              }
+            });
+          }
+        } catch (err: any) {
+          console.error('Failed to re-acquire video track on toggle:', err);
+          setError('Could not access camera: ' + (err?.message || 'Permission denied'));
+          return;
+        }
+      }
+    }
+
+    if (activeVideoTrack) {
+      activeVideoTrack.enabled = true;
+    }
+    setIsVideoOff(false);
+
+    peerConnections.current.forEach((_, peerId) => {
+      sendSignal(peerId, 'media-state', {
+        isVideoOff: false,
+        isAudioMuted: isAudioMutedRef.current,
+      });
     });
-    setIsVideoOff(nextOff);
-  }, [isVideoOff]);
+  }, [isVideoOff, selectedVideoDeviceId, sendSignal]);
 
   // Mid-call Microphone Switcher
   const switchAudioDevice = useCallback(async (deviceId: string) => {

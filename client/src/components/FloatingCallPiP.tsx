@@ -141,17 +141,33 @@ export const FloatingCallPiP: React.FC<FloatingCallPiPProps> = ({
       !featured.isVideoOff
   );
 
-  useEffect(() => {
-    if (videoRef.current && featured.stream) {
-      videoRef.current.srcObject = featured.stream;
-    }
-  }, [featured.stream, hasVisibleVideo]);
+  const bindVideoRef = useCallback(
+    (node: HTMLVideoElement | null) => {
+      videoRef.current = node;
+      if (node) {
+        node.muted = featured.isLocal;
+        if (featured.stream && node.srcObject !== featured.stream) {
+          node.srcObject = featured.stream;
+        }
+        if (hasVisibleVideo) {
+          node.play().catch(() => {});
+        }
+      }
+    },
+    [featured.stream, featured.isLocal, hasVisibleVideo]
+  );
 
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.muted = featured.isLocal;
+      if (featured.stream && videoRef.current.srcObject !== featured.stream) {
+        videoRef.current.srcObject = featured.stream;
+      }
+      if (hasVisibleVideo) {
+        videoRef.current.play().catch(() => {});
+      }
     }
-  }, [featured.isLocal]);
+  }, [featured.stream, featured.isLocal, hasVisibleVideo]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     // Ignore drag start when clicking interactive buttons
@@ -203,20 +219,20 @@ export const FloatingCallPiP: React.FC<FloatingCallPiPProps> = ({
         }}
         className="fixed top-0 left-0 z-40 w-64 sm:w-72 aspect-video rounded-xl border border-white/10 shadow-2xl bg-canvas overflow-hidden select-none touch-none cursor-grab active:cursor-grabbing group"
       >
-        {/* Video or Avatar Fallback */}
-        {hasVisibleVideo ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted={featured.isLocal}
-            className={clsx(
-              'w-full h-full pointer-events-none',
-              featured.isScreen ? 'object-contain bg-black' : 'object-cover',
-              featured.isLocal && !featured.isScreen && 'scale-x-[-1]'
-            )}
-          />
-        ) : (
+        {/* Video Element (Kept in DOM so stream & decoder pipeline are never dropped on toggle) */}
+        <video
+          ref={bindVideoRef}
+          autoPlay
+          playsInline
+          muted={featured.isLocal}
+          className={clsx(
+            'w-full h-full pointer-events-none',
+            featured.isScreen ? 'object-contain bg-black' : 'object-cover',
+            featured.isLocal && !featured.isScreen && 'scale-x-[-1]',
+            !hasVisibleVideo && 'hidden'
+          )}
+        />
+        {!hasVisibleVideo && (
           <div className="w-full h-full bg-surface flex flex-col items-center justify-center pointer-events-none">
             <div className="w-12 h-12 rounded-full bg-accent/15 border border-accent/30 flex items-center justify-center text-base font-semibold text-accent uppercase">
               {(featured.label || 'C').charAt(0)}

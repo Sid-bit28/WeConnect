@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import clsx from 'clsx';
 import { MicOff, VideoOff, ScreenShare, MessageSquare, Volume2, VolumeX, Menu } from 'lucide-react';
 import type { PeerStream } from '../types';
@@ -33,25 +33,41 @@ const VideoTile: React.FC<VideoTileProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [isRemoteScreenMuted, setIsRemoteScreenMuted] = useState(false);
 
-  const hasVideoTrack = stream && stream.getVideoTracks().length > 0 && !isVideoOff;
+  const hasVideoTrack = Boolean(stream && stream.getVideoTracks().length > 0 && !isVideoOff);
   const hasScreenAudio = Boolean(isScreen && stream && stream.getAudioTracks().length > 0);
   const shouldMuteVideo = isLocal || (isScreen && isRemoteScreenMuted);
+
+  const bindVideoRef = useCallback(
+    (node: HTMLVideoElement | null) => {
+      videoRef.current = node;
+      if (node) {
+        node.muted = shouldMuteVideo;
+        if (stream && node.srcObject !== stream) {
+          node.srcObject = stream;
+        }
+        if (hasVideoTrack) {
+          node.play().catch(() => {});
+        }
+      }
+    },
+    [stream, shouldMuteVideo, hasVideoTrack]
+  );
 
   useEffect(() => {
     setIsRemoteScreenMuted(false);
   }, [stream]);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream]);
-
-  useEffect(() => {
     if (videoRef.current) {
       videoRef.current.muted = shouldMuteVideo;
+      if (stream && videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
+      }
+      if (hasVideoTrack) {
+        videoRef.current.play().catch(() => {});
+      }
     }
-  }, [shouldMuteVideo]);
+  }, [stream, shouldMuteVideo, hasVideoTrack, isVideoOff]);
 
   const getAvatarStyle = (name: string) => {
     const styles = [
@@ -79,21 +95,22 @@ const VideoTile: React.FC<VideoTileProps> = ({
         className
       )}
     >
-      {/* Video Element */}
-      {hasVideoTrack ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={shouldMuteVideo}
-          className={clsx(
-            'w-full h-full',
-            objectFit === 'contain' ? 'object-contain bg-black' : 'object-cover',
-            isLocal && !isScreen && 'scale-x-[-1]' // Mirror local webcam only, never screen
-          )}
-        />
-      ) : (
-        /* Refined Avatar Fallback */
+      {/* Video Element (Kept in DOM so stream & decoder pipeline are never dropped on toggle) */}
+      <video
+        ref={bindVideoRef}
+        autoPlay
+        playsInline
+        muted={shouldMuteVideo}
+        className={clsx(
+          'w-full h-full',
+          objectFit === 'contain' ? 'object-contain bg-black' : 'object-cover',
+          isLocal && !isScreen && 'scale-x-[-1]', // Mirror local webcam only, never screen
+          !hasVideoTrack && 'hidden'
+        )}
+      />
+
+      {/* Refined Avatar Fallback */}
+      {!hasVideoTrack && (
         <div className="flex flex-col items-center justify-center select-none">
           <div
             className={clsx(

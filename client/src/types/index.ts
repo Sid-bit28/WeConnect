@@ -106,6 +106,7 @@ export interface SignalData {
     | 'candidate'
     | 'join-call'
     | 'leave-call'
+    | 'media-state'
     | 'screen-offer'
     | 'screen-answer'
     | 'screen-candidate'
