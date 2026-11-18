@@ -63,9 +63,7 @@ Whether streaming 1080p 60fps video with tab audio, multitasking via an in-app P
 
 <br/>
 
-[![Watch Demo on YouTube](https://img.shields.io/badge/Watch%20Full%20Demo-YouTube%201080p-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://weconnect-dgw2.onrender.com)
-[![Watch on Loom](https://img.shields.io/badge/Interactive%20Walkthrough-Loom-625DF5?style=for-the-badge&logo=loom&logoColor=white)](https://weconnect-dgw2.onrender.com)
-
+[![Watch Demo](https://img.shields.io/badge/Watch%20Full%20Demo-YouTube%201080p-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://weconnect-dgw2.onrender.com/tour.html)
 </div>
 
 <br/>
