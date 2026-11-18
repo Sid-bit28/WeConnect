@@ -15,11 +15,12 @@
 [![WebRTC](https://img.shields.io/badge/WebRTC-Mesh%20Calling-FF6C37?style=for-the-badge&logo=webrtc&logoColor=white)](https://webrtc.org)
 [![PostgreSQL](https://img.shields.io/badge/Neon-PostgreSQL-00E599?style=for-the-badge&logo=postgresql&logoColor=black)](https://neon.tech)
 [![Docker](https://img.shields.io/badge/Docker-28MB%20Alpine-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
+[![Android APK](https://img.shields.io/badge/Android-4.1MB%20APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](#-android-apk-mobile-app)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 <br/>
 
-[🚀 **Explore Live App**](https://weconnect-dgw2.onrender.com) • [🎬 **Interactive Walkthrough Tour**](https://weconnect-dgw2.onrender.com/tour.html) • [✨ **Features**](#-key-features) • [🎥 **Video Showcase**](#-video-showcase--gallery) • [📐 **Architecture**](#-technical-architecture) • [⚡ **Quickstart**](#-quickstart--local-development) • [🚢 **Deployment**](#-cloud-deployment-render--neon)
+[🚀 **Explore Live App**](https://weconnect-dgw2.onrender.com) • [📱 **Android APK**](#-android-apk-mobile-app) • [🎬 **Interactive Walkthrough Tour**](https://weconnect-dgw2.onrender.com/tour.html) • [✨ **Features**](#-key-features) • [🎥 **Video Showcase**](#-video-showcase--gallery) • [📐 **Architecture**](#-technical-architecture) • [⚡ **Quickstart**](#-quickstart--local-development) • [🚢 **Deployment**](#-cloud-deployment-render--neon)
 
 <br/>
 
@@ -221,6 +222,36 @@ WeConnect is pre-configured with a zero-config [`render.yaml`](./render.yaml) Bl
    * `DATABASE_URL`: Paste your Neon connection string.
    * `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL` *(Optional: Metered.ca free credentials for strict corporate firewalls)*.
 4. Click **Apply**. Your app will build and deploy with full HTTPS/WSS support.
+
+---
+
+## 📱 Android APK (Mobile App)
+
+WeConnect is packaged for Android via **Capacitor 8** with native WebRTC hardware acceleration, automatic permission prompts, and high-density adaptive launcher icons.
+
+### 📥 Download & Install APK
+The compiled debug APK is generated and staged directly in the repository root:
+* **File**: [`WeConnect.apk`](./WeConnect.apk) (4.1 MB)
+* **Package**: `com.weconnect.app`
+* **Features Enabled**: Full 1080p camera calling, microphone audio, background audio sinks, picture-in-picture, and real-time push-alerts.
+
+To install directly onto an Android device via USB debugging:
+```bash
+adb install -r WeConnect.apk
+```
+
+### ⚙️ Build from Source
+```bash
+cd client
+npm run build
+node scripts/generate-icons.js
+npx cap sync android
+cd android && ./gradlew assembleDebug
+```
+The newly compiled APK will be in `client/android/app/build/outputs/apk/debug/app-debug.apk`.
+
+### 🚀 Automated GitHub Actions CI/CD
+Every tag (`v*`) or push to `main` automatically triggers [`.github/workflows/build-apk.yml`](./.github/workflows/build-apk.yml) to compile and upload the latest APK as a downloadable release asset.
 
 ---
 
