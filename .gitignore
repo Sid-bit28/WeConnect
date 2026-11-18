@@ -3,6 +3,7 @@ server/server
 server/*.exe
 server/*.test
 *.out
+*.apk
 
 # Data store
 server/data/*.json

@@ -1,0 +1,9 @@
+{
+  "appId": "com.weconnect.app",
+  "appName": "WeConnect",
+  "webDir": "dist",
+  "server": {
+    "url": "https://weconnect-dgw2.onrender.com",
+    "cleartext": true
+  }
+}
