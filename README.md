@@ -19,7 +19,7 @@
 
 <br/>
 
-[🚀 **Explore Live App**](https://weconnect-dgw2.onrender.com) • [✨ **Features**](#-key-features) • [🎥 **Video Showcase**](#-video-showcase--gallery) • [📐 **Architecture**](#-technical-architecture) • [⚡ **Quickstart**](#-quickstart--local-development) • [🚢 **Deployment**](#-cloud-deployment-render--neon)
+[🚀 **Explore Live App**](https://weconnect-dgw2.onrender.com) • [🎬 **Interactive Walkthrough Tour**](https://weconnect-dgw2.onrender.com/tour.html) • [✨ **Features**](#-key-features) • [🎥 **Video Showcase**](#-video-showcase--gallery) • [📐 **Architecture**](#-technical-architecture) • [⚡ **Quickstart**](#-quickstart--local-development) • [🚢 **Deployment**](#-cloud-deployment-render--neon)
 
 <br/>
 
