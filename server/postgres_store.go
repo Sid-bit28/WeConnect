@@ -25,10 +25,13 @@ func NewPostgresStore(ctx context.Context, connString string) (*PostgresStore, e
 		return nil, fmt.Errorf("invalid postgres connection string: %w", err)
 	}
 
-	config.MaxConns = 25
-	config.MinConns = 2
-	config.MaxConnLifetime = 1 * time.Hour
-	config.MaxConnIdleTime = 30 * time.Minute
+	// Tuned for Neon Serverless PostgreSQL + PgBouncer transaction pooler
+	config.MaxConns = 15
+	config.MinConns = 0
+	config.MaxConnIdleTime = 4 * time.Minute
+	config.MaxConnLifetime = 30 * time.Minute
+	config.HealthCheckPeriod = 1 * time.Minute
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

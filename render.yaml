@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: weconnect
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: STATIC_DIR
+        value: /app/static
+      - key: UPLOAD_DIR
+        value: /app/data/uploads
+      - key: DATABASE_URL
+        sync: false
+      # Optional TURN relay configuration for strict NAT / mobile networks
+      - key: TURN_URL
+        sync: false
+      - key: TURN_USERNAME
+        sync: false
+      - key: TURN_CREDENTIAL
+        sync: false

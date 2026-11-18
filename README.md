@@ -108,17 +108,31 @@ Messages are exchanged over `ws://localhost:8080/ws?room=<room_name>&user=<usern
 
 ## Deployment & Running
 
-### Option 1: Docker Compose (All-in-One + PostgreSQL)
-Run the full production stack with a single command:
+### Option 1: Deploy for Free on Render + Neon
+WeConnect includes a ready-to-use [`render.yaml`](./render.yaml) Blueprint and `pgxpool` configuration tuned for Neon's Serverless PostgreSQL (`MinConns = 0`, PgBouncer simple protocol, 30s cold-wake startup timeout).
+
+1. **Create a Free Neon PostgreSQL Database**:
+   - Sign in at [neon.tech](https://neon.tech) and create a new project.
+   - Copy the **Pooled connection string** (`postgres://...@...-pooler...neon.tech/neondb?sslmode=require`).
+2. **Deploy on Render**:
+   - Push this repository to GitHub/GitLab.
+   - In [Render Dashboard](https://dashboard.render.com), click **New → Blueprint** and select your repository.
+   - Render detects `render.yaml` (Free Docker Web Service, `/health` healthcheck).
+   - Paste your Neon pooled connection string into `DATABASE_URL` when prompted (optionally set `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL` for calls across strict NATs).
+3. **Launch**:
+   - Render builds the multi-stage `Dockerfile`, binds to its injected `PORT`, runs automatic Postgres migrations on startup, and serves the full SPA + WebSockets over HTTPS/WSS.
+
+### Option 2: Docker Compose (All-in-One + PostgreSQL)
+Run the full production stack locally with a single command:
 
 ```bash
 docker compose up --build
 ```
 
 - **App**: Available at `http://localhost:8080` (serves both API/WebSocket and built SPA).
-- **Database**: PostgreSQL 16 on port 5432 with health check and persistent volume `pgdata`.
+- **Database**: PostgreSQL 16 on host port `5433` with health check and persistent volumes (`pgdata`, `uploads`).
 
-### Option 2: Local Development Script
+### Option 3: Local Development Script
 Run the local dev script for hot reloading:
 
 ```bash

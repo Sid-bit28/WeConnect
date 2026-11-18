@@ -1221,17 +1221,17 @@ func maskDBURL(rawURL string) string {
 }
 
 func main() {
-	port := os.Getenv("PORT")
+	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = "8080"
 	}
 	addr := ":" + port
 
 	var store Store
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if dbURL != "" {
 		log.Printf("[Server] Initializing PostgreSQL connection: %s...", maskDBURL(dbURL))
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		pgStore, err := NewPostgresStore(ctx, dbURL)
